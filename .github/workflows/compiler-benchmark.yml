@@ -1,0 +1,156 @@
+name: Compiler speed benchmark
+
+on:
+  push:
+    branches:
+      - bench/clang-vs-gcc-20260920
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      VIBEQC_BENCHMARK_SHA: 54cc561c5ef51d09f2639aa5e314708f9c73f806
+    steps:
+      - name: Check out upstream VibeQC source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: jinzhezenggroup/vibeqc
+          ref: ${{ env.VIBEQC_BENCHMARK_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Record benchmark environment
+        run: |
+          set -euxo pipefail
+          git rev-parse HEAD
+          gcc --version | head -n 1
+          g++ --version | head -n 1
+          clang --version | head -n 1
+          clang++ --version | head -n 1
+          cmake --version | head -n 1
+          ninja --version
+          nproc
+          lscpu
+
+      - name: Benchmark GCC vs Clang
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "compiler,run,configure_s,clean_build_s,leaf_rebuild_s,header_rebuild_s" > compiler-benchmark.csv
+
+          declare -A count
+          count[gcc]=0
+          count[clang]=0
+
+          seconds_since() {
+            python3 - "$1" <<'PY'
+          import sys, time
+          start = int(sys.argv[1])
+          print(f"{(time.time_ns() - start) / 1e9:.6f}")
+          PY
+          }
+
+          run_one() {
+            local compiler="$1"
+            local cxx
+            local run
+            local build_dir
+            local t0 configure_s clean_s leaf_s header_s
+
+            if [[ "$compiler" == "gcc" ]]; then
+              cxx=g++
+            else
+              cxx=clang++
+            fi
+
+            count[$compiler]=$(( ${count[$compiler]} + 1 ))
+            run="${count[$compiler]}"
+            build_dir="build-bench-${compiler}-${run}"
+
+            rm -rf "$build_dir"
+
+            t0=$(date +%s%N)
+            CXX="$cxx" cmake -S . -B "$build_dir" -G Ninja               -DVIBEQC_ENABLE_CUDA=OFF               -DVIBEQC_BUILD_TESTS=OFF               -DVIBEQC_COMPILER_CACHE=off               -DCMAKE_BUILD_TYPE=Release
+            configure_s=$(seconds_since "$t0")
+
+            t0=$(date +%s%N)
+            cmake --build "$build_dir" --target vibeqc --parallel "$(nproc)"
+            clean_s=$(seconds_since "$t0")
+
+            touch src/scf/rhf.cpp
+            t0=$(date +%s%N)
+            cmake --build "$build_dir" --target vibeqc --parallel "$(nproc)"
+            leaf_s=$(seconds_since "$t0")
+
+            touch src/scf/mean_field.hpp
+            t0=$(date +%s%N)
+            cmake --build "$build_dir" --target vibeqc --parallel "$(nproc)"
+            header_s=$(seconds_since "$t0")
+
+            echo "${compiler},${run},${configure_s},${clean_s},${leaf_s},${header_s}"               | tee -a compiler-benchmark.csv
+          }
+
+          # Interleave compilers to reduce systematic warm-cache and host-drift bias.
+          run_one gcc
+          run_one clang
+          run_one clang
+          run_one gcc
+          run_one gcc
+          run_one clang
+
+          python3 <<'PY'
+          import csv
+          import os
+          import statistics
+          from pathlib import Path
+
+          rows = list(csv.DictReader(Path("compiler-benchmark.csv").open()))
+          metrics = ("configure_s", "clean_build_s", "leaf_rebuild_s", "header_rebuild_s")
+
+          lines = [
+              "# GCC vs Clang compile benchmark",
+              "",
+              "Source: jinzhezenggroup/vibeqc@54cc561c5ef51d09f2639aa5e314708f9c73f806",
+              "",
+              "| Metric | GCC median (s) | Clang median (s) | Clang / GCC |",
+              "|---|---:|---:|---:|",
+          ]
+
+          for metric in metrics:
+              gcc = [float(r[metric]) for r in rows if r["compiler"] == "gcc"]
+              clang = [float(r[metric]) for r in rows if r["compiler"] == "clang"]
+              gm = statistics.median(gcc)
+              cm = statistics.median(clang)
+              lines.append(f"| {metric} | {gm:.3f} | {cm:.3f} | {cm/gm:.3f}x |")
+
+          lines += [
+              "",
+              "Lower is faster. Compiler caches are disabled; CUDA and native tests are excluded.",
+              "Incremental leaf rebuild touches src/scf/rhf.cpp; header rebuild touches src/scf/mean_field.hpp.",
+              "",
+              "Raw CSV is attached as a workflow artifact.",
+          ]
+
+          summary = "\n".join(lines) + "\n"
+          Path("compiler-benchmark.md").write_text(summary)
+          print(summary)
+
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as f:
+              f.write(summary)
+          PY
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: gcc-vs-clang-compiler-benchmark
+          path: |
+            compiler-benchmark.csv
+            compiler-benchmark.md
+          retention-days: 14
