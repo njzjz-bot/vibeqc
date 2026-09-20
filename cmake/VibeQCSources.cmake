@@ -70,7 +70,8 @@ function(vibeqc_add_posthf_cc_sources target)
   if(VIBEQC_ENABLE_CUDA)
     target_sources(${target} PRIVATE
       src/posthf/df_bridge.cu
-      src/posthf/cuda_transform.cu)
+      src/posthf/cuda_transform.cu
+      src/posthf/ri_mp2_cuda.cu)
   endif()
 endfunction()
 

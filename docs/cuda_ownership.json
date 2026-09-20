@@ -628,6 +628,20 @@
       "subsystem": "runtime"
     },
     {
+      "path": "src/posthf/ri_mp2_cuda.cu",
+      "reason": "Bounded CUDA RI-MP2 placement, source/metric-plan reuse, cuBLAS AO-to-MO and fitted-integral orchestration, residency/transfer accounting and failure-atomic ownership. Shared DF generation/whitening remains owned by the SCF provider.",
+      "regions": [
+        {
+          "reason": "Ordered RHF-MP2 denominator, opposite-/same-spin energy equations and compensated device reductions.",
+          "role": "scientific",
+          "start": "__global__ void reduce_ri_mp2_block",
+          "stop": "std::size_t fixed_capacity"
+        }
+      ],
+      "role": "runtime",
+      "subsystem": "runtime"
+    },
+    {
       "path": "src/runtime/cuda_ao_pairs.cuh",
       "reason": "Typed normalized AO/primitive traversal, pair schedules and symmetric channel stores; all operator semantics supplied by generated policy.",
       "regions": [],
