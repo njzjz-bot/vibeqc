@@ -10,7 +10,12 @@ import pytest
 from test_tensor_layout import gemm_producer_case, producer_case
 from vibeqc_compiler.common.cuda_adapter import CudaCompilerAdapter
 from vibeqc_compiler.common.cuda_target import cuda_target_info
-from vibeqc_compiler.tensor import execute, linearize, transpose_program
+from vibeqc_compiler.tensor import (
+    conservative_precision_variants,
+    execute,
+    linearize,
+    transpose_program,
+)
 from vibeqc_compiler.tensor.cuda_execute import PreparedCuda, compile_cuda
 from vibeqc_compiler.tensor.cuda_plan import TensorSchedule, plan_cuda
 from vibeqc_compiler.tensor.cuda_resident import PreparedResident, compile_resident
@@ -103,6 +108,76 @@ def test_direct_and_packed_gemm_read_write_alternate_layouts(
         packed_producer=packed_producer, packed_consumer=packed_consumer
     )
     assert check(program, feeds, compiler, cache).layout_decision.changed_steps
+
+
+def test_fp32_producer_layout_executes_on_real_cuda(
+    compiler: typing.Any, cache: typing.Any
+) -> None:
+    program, feeds, _ = producer_case(dtype="float32")
+    expected = execute(program, feeds).outputs
+    plan = plan_cuda(
+        program,
+        compiler.target,
+        schedule=TensorSchedule(
+            layouts=True,
+            direct_gemm=True,
+            tile_m=2,
+            tile_n=3,
+            tile_k=4,
+        ),
+    )
+
+    assert plan.precision == "fp32"
+    assert plan.layout_decision.changed_steps
+    producer = plan.steps[plan.layout_decision.changed_steps[0]]
+    assert producer.node.spec.dtype == "float32"
+    assert producer.layout is not None and not producer.layout.is_c_contiguous
+    assert next(
+        step for step in plan.steps if step.node.op == "einsum"
+    ).gemm.startswith("direct-")
+
+    artifact = compile_cuda(plan, compiler, cache)
+    with PreparedCuda(plan, artifact) as prepared:
+        for profile in (False, True):
+            result = prepared.execute(feeds, profile=profile)
+            assert result.metrics["precision"] == "fp32"
+            np.testing.assert_allclose(
+                result.outputs["out"],
+                expected["out"],
+                rtol=3e-6,
+                atol=2e-6,
+            )
+
+
+def test_precision_variant_and_layout_execute_as_one_schedule(
+    compiler: typing.Any, cache: typing.Any
+) -> None:
+    strict, feeds, _ = producer_case()
+    variants = conservative_precision_variants(strict)
+    assert len(variants) == 2
+    program = variants[1]
+    expected = execute(program, feeds).outputs
+    plan = plan_cuda(
+        program,
+        compiler.target,
+        schedule=TensorSchedule(layouts=True, direct_gemm=True),
+    )
+
+    assert plan.precision == "typed-fp32-fp64"
+    assert plan.layout_decision.changed_steps
+    changed = [plan.steps[i] for i in plan.layout_decision.changed_steps]
+    assert any(step.node.op == "cast" for step in changed)
+
+    artifact = compile_cuda(plan, compiler, cache)
+    with PreparedCuda(plan, artifact) as prepared:
+        result = prepared.execute(feeds)
+        assert result.metrics["precision"] == "typed-fp32-fp64"
+        np.testing.assert_allclose(
+            result.outputs["out"],
+            expected["out"],
+            rtol=3e-6,
+            atol=2e-6,
+        )
 
 
 def test_both_operands_require_joint_producer_selection(

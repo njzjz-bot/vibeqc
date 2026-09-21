@@ -469,11 +469,6 @@ def plan_cuda(
             and precision_values[program_names[node]].compute_dtype
             != precision_values[program_names[node]].accumulation_dtype
         )
-    if schedule.layouts and any(
-        n.spec.dtype in ("float32", "float64") and n.spec.dtype != "float64"
-        for n, _ in nodes
-    ):
-        raise ValueError("producer layout optimization is qualified only for float64")
     if any(n.op in TRANSCENDENTALS for n, _ in nodes) and len(nodes) > INT_MAX // 2:
         raise ValueError("too many steps for transcendental domain diagnostics")
     for node, _ in nodes:

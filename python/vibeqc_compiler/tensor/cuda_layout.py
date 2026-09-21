@@ -1,7 +1,8 @@
 """Bounded producer/consumer layout choice for the existing CUDA lowering.
 
-This opt-in CUDA slice is qualified for FP64 only. Ordinary FP32 execution
-remains available; producer-layout FP32 qualification is separate.
+The layout search is dtype-aware: conversion and panel costs use each value's
+physical item size, while the CUDA lowering supplies typed FP32/FP64 GEMM and
+pack/scatter kernels. Precision legality remains an independent contract.
 
 Only internal materialized values may change layout. Inputs, constants, named
 outputs and virtual expressions keep their existing ownership/ABI contracts.

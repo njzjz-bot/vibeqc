@@ -583,6 +583,57 @@ def test_precision_variant_uses_existing_tuner_and_specialization_identity(
     assert features["strict_audit_dtype"] == "float64"
 
 
+def test_layout_search_crosses_conservative_precision_variants() -> None:
+    dims = {"i": 3, "b": 2, "k": 7, "j": 5}
+
+    def tensor(name: str, labels: str) -> typing.Any:
+        return input_tensor(
+            name,
+            TensorSpec(
+                tuple(
+                    Index(label, IndexSpace(label, "batch", dims[label]))
+                    for label in labels
+                ),
+                role="input",
+            ),
+        )
+
+    x = tensor("x", "ibk")
+    y = tensor("y", "bkj")
+    program = Program({"out": einsum("ibk,bkj->bij", multiply(x, x), y)})
+    variants = conservative_precision_variants(program)
+    assert len(variants) == 2
+
+    baseline = plan_cuda(program, TARGET)
+    proposals = plan_schedule_search(
+        baseline,
+        (TensorSchedule(layouts=True),),
+        precision_programs=variants,
+    )
+    mixed = next(
+        proposal
+        for proposal in proposals
+        if proposal.plan is not None
+        and proposal.plan.program.logical_hash == variants[1].logical_hash
+    )
+
+    assert mixed.status == "ready"
+    assert mixed.plan is not None
+    assert mixed.plan.precision == "typed-fp32-fp64"
+    assert mixed.plan.layout_decision.enabled
+    assert mixed.plan.layout_decision.changed_steps
+    assert mixed.estimates is not None
+    assert mixed.estimates["estimated_precision_cast_read_bytes"] > 0
+    assert mixed.estimates["estimated_precision_cast_write_bytes"] > 0
+    assert (
+        mixed.estimates["estimated_layout_conversion_bytes"]
+        == mixed.plan.layout_decision.selected_conversion_bytes
+    )
+    assert mixed.estimates["precision_schedule_identity"] == (
+        mixed.plan.precision_schedule.identity
+    )
+
+
 def test_default_search_reuses_existing_cache_and_never_compiles_duplicates(
     tmp_path: typing.Any, fake_cuda: typing.Any
 ) -> None:

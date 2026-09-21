@@ -33,7 +33,12 @@ from vibeqc_compiler.tensor.cuda_plan import ALIGNMENT, TensorSchedule, plan_cud
 TARGET = cuda_target_info("sm_80")
 
 
-def operand(name: typing.Any, labels: typing.Any, dimensions: typing.Any) -> typing.Any:
+def operand(
+    name: typing.Any,
+    labels: typing.Any,
+    dimensions: typing.Any,
+    dtype: str = "float64",
+) -> typing.Any:
     return input_tensor(
         name,
         TensorSpec(
@@ -41,6 +46,7 @@ def operand(name: typing.Any, labels: typing.Any, dimensions: typing.Any) -> typ
                 Index(label, IndexSpace(label, "batch", dimensions[label]))
                 for label in labels
             ),
+            dtype=dtype,
             role="parameter",
             differentiable=True,
         ),
@@ -52,11 +58,12 @@ def producer_case(
     *,
     dimensions: typing.Any = None,
     both: typing.Any = False,
+    dtype: str = "float64",
 ) -> typing.Any:
     """Interleaved batch layout at a producer; GEMM needs batch-prefix storage."""
     dims = {"i": 3, "b": 2, "k": 7, "j": 5} if dimensions is None else dimensions
-    x = operand("x", "ibk", dims)
-    y = operand("y", "kjb" if both else "bkj", dims)
+    x = operand("x", "ibk", dims, dtype)
+    y = operand("y", "kjb" if both else "bkj", dims, dtype)
     if kind == "multiply":
         value = multiply(x, x)
     elif kind == "add":
@@ -64,7 +71,7 @@ def producer_case(
     elif kind == "divide":
         value = divide(x, add(x, x, coefficients=(1, 2)))
     elif kind == "transpose":
-        x = operand("x", "bik", dims)
+        x = operand("x", "bik", dims, dtype)
         value = transpose(x, (1, 0, 2))
     elif kind == "gather":
         value = gather(x, 0, (2, 0, 2))
@@ -72,13 +79,13 @@ def producer_case(
         value = slice_tensor(x, ((0, dims["i"]), (0, dims["b"]), (1, dims["k"])))
         y = slice_tensor(y, ((0, dims["b"]), (1, dims["k"]), (0, dims["j"])))
     elif kind == "broadcast":
-        x = operand("x", "ik", dims)
-        axes = operand("unused", "ibk", dims).spec.indices
+        x = operand("x", "ik", dims, dtype)
+        axes = operand("unused", "ibk", dims, dtype).spec.indices
         value = broadcast(x, axes, (0, 2))
     elif kind == "reshape":
         value = reshape(x, x.spec.indices)
     elif kind == "reduce":
-        x = operand("x", "ibkr", {**dims, "r": 3})
+        x = operand("x", "ibkr", {**dims, "r": 3}, dtype)
         value = reduce_sum(x, (3,))
     else:
         raise ValueError(kind)
@@ -87,7 +94,7 @@ def producer_case(
     program = Program({"out": einsum(equation, value, right)})
     rng = np.random.default_rng(509)
     feeds = {
-        node.attrs["name"]: rng.uniform(0.2, 0.8, node.spec.shape)
+        node.attrs["name"]: rng.uniform(0.2, 0.8, node.spec.shape).astype(dtype)
         for node in program.live_nodes
         if node.op == "input"
     }
@@ -445,12 +452,33 @@ def test_region_search_has_an_explicit_trial_limit() -> None:
     )
 
 
-def test_fp32_layout_admission_does_not_change_ordinary_fp32() -> None:
+def test_fp32_layout_admission_keeps_ordinary_fp32_semantics() -> None:
     x = input_tensor("x", TensorSpec(dtype="float32", role="input"))
     program = Program({"out": add(x, x)})
-    assert plan_cuda(program, TARGET).precision == "fp32"
-    with pytest.raises(ValueError, match="layout.*float64"):
-        plan_cuda(program, TARGET, schedule=TensorSchedule(layouts=True))
+    baseline = plan_cuda(program, TARGET)
+    planned = plan_cuda(program, TARGET, schedule=TensorSchedule(layouts=True))
+
+    assert baseline.precision == planned.precision == "fp32"
+    assert planned.layout_decision.enabled
+    assert not planned.layout_decision.changed_steps
+
+
+def test_fp32_producer_layout_uses_dtype_aware_conversion_costs() -> None:
+    program, _, _ = producer_case(dtype="float32")
+    plan = plan_cuda(program, TARGET, schedule=TensorSchedule(layouts=True))
+
+    assert plan.precision == "fp32"
+    assert plan.layout_decision.changed_steps
+    assert plan.layout_decision.selected_conversion_bytes == 0
+    assert (
+        plan.layout_decision.selected_cost
+        < plan.layout_decision.baseline_conversion_bytes
+    )
+    producer = plan.steps[plan.layout_decision.changed_steps[0]]
+    assert producer.node.spec.dtype == "float32"
+    assert producer.layout is not None and not producer.layout.is_c_contiguous
+    contraction = next(step for step in plan.steps if step.node.op == "einsum")
+    assert contraction.gemm.startswith("direct-")
 
 
 @pytest.mark.parametrize("other", [None, object(), (2, 3), 1, "layout"])
