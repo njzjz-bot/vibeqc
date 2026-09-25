@@ -1,0 +1,254 @@
+name: bench-1277-openblas-provider
+
+on:
+  push:
+    branches: ["bench/1277-openblas-provider"]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASE_SHA: c057ec6e7cacdcb1e264c6daf0fbdba3ae6f5323
+      HEAD_SHA: 81389aa42da84b59ad141e7af1598c6f5824fe54
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install CPU dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libopenblas-dev python3-numpy
+
+      - name: Prepare and build exact revisions
+        run: |
+          git worktree add --detach /tmp/vq-base "$BASE_SHA"
+          git worktree add --detach /tmp/vq-head "$HEAD_SHA"
+          for label in base head; do
+            root="/tmp/vq-${label}"
+            cmake -S "$root" -B "$root/build" -G Ninja               -DVIBEQC_ENABLE_CUDA=OFF               -DCMAKE_BUILD_TYPE=Release
+            cmake --build "$root/build" --parallel 4
+          done
+
+      - name: Write J-only probe
+        run: |
+          cat >/tmp/jonly_probe.cpp <<'CPP'
+          #include <chrono>
+          #include <cstddef>
+          #include <iomanip>
+          #include <iostream>
+          #include <numeric>
+          #include <vector>
+          #include "scf/fock_build.hpp"
+          #include "tensor/cpu_linalg.hpp"
+
+          using Clock = std::chrono::steady_clock;
+          int main() {
+            using namespace vibeqc::scf;
+            using namespace vibeqc::tensor;
+            const CpuLinalgPlan provider_plan{
+                CpuLinalgProvider::automatic,
+                CpuLinalgThreadOwnership::provider_parallel,
+                1,
+            };
+            const auto default_diag = cpu_linalg_diagnostic();
+            const auto provider_diag = cpu_linalg_diagnostic(provider_plan);
+            std::cout << std::setprecision(17)
+                      << "{\"default_provider\":\""
+                      << cpu_linalg_provider_name(default_diag.provider)
+                      << "\",\"provider_parallel_provider\":\""
+                      << cpu_linalg_provider_name(provider_diag.provider)
+                      << "\",\"rows\":[";
+            bool first = true;
+            for (std::size_t n : {24u, 32u, 40u}) {
+              const std::size_t count = n * n;
+              std::vector<double> eri(count * count), density(count);
+              for (std::size_t a = 0; a < count; ++a) {
+                density[a] = (static_cast<int>(a % 11) - 5) * 0.013;
+                for (std::size_t b = 0; b < count; ++b)
+                  eri[a * count + b] =
+                      (1.0 + static_cast<double>((a * 17 + b * 13) % 97)) * 1.0e-5;
+              }
+              auto spec = make_hf_fock_spec(FockSpin::Restricted, FockApproximation::Exact);
+              spec.derivative_order = 0;
+              spec.exchange.present = false;
+              spec.exchange.coefficient = 0.0;
+              const auto strategy = resolve_fock_build(spec, FockBackend::Cpu);
+              DirectJkMatrices out;
+              for (int i = 0; i < 5; ++i)
+                out = build_exact_direct_jk(strategy, n, eri, density);
+              std::vector<double> samples;
+              constexpr int repeats = 30;
+              for (int s = 0; s < 11; ++s) {
+                const auto start = Clock::now();
+                for (int r = 0; r < repeats; ++r)
+                  out = build_exact_direct_jk(strategy, n, eri, density);
+                samples.push_back(
+                    std::chrono::duration<double>(Clock::now() - start).count() / repeats);
+              }
+              const double checksum =
+                  std::accumulate(out.coulomb.begin(), out.coulomb.end(), 0.0);
+              if (!first) std::cout << ',';
+              first = false;
+              std::cout << "{\"nbf\":" << n << ",\"seconds\":[";
+              for (std::size_t i = 0; i < samples.size(); ++i) {
+                if (i) std::cout << ',';
+                std::cout << samples[i];
+              }
+              std::cout << "],\"checksum\":" << checksum << "}";
+            }
+            std::cout << "]}\n";
+          }
+          CPP
+          for label in base head; do
+            root="/tmp/vq-${label}"
+            g++ -std=c++20 -O3 -DNDEBUG               -I"$root/src" -I"$root/include" /tmp/jonly_probe.cpp               -L"$root/build" -Wl,-rpath,"$root/build" -lvibeqc               -o "/tmp/jonly-${label}"
+            "/tmp/jonly-${label}" | tee "/tmp/jonly-${label}.json"
+          done
+
+      - name: Write PBE endpoint probe
+        run: |
+          cat >/tmp/pbe_probe.py <<'PY'
+          import json, statistics, sys
+          from time import perf_counter
+
+          label, root, output = sys.argv[1:4]
+          sys.path.insert(0, root + "/python")
+          from vibeqc import Calculator
+
+          atoms = [
+              ("O", (0.0, 0.0, 0.0)),
+              ("H", (0.0, -1.432337, 1.107153)),
+              ("H", (0.0, 1.432337, 1.107153)),
+          ]
+          systems = []
+          for shift in (0.0, 0.002, 0.004, 0.006):
+              systems.append([
+                  (symbol, (x, y, z + (shift if i == len(atoms) - 1 else 0.0)))
+                  for i, (symbol, (x, y, z)) in enumerate(atoms)
+              ])
+
+          calc = Calculator(
+              method="pbe-rks",
+              basis="def2-svp",
+              device="cpu",
+              density_fitting="none",
+              energy_tolerance=1e-10,
+              density_tolerance=1e-8,
+              screening_tolerance=1e-12,
+              max_iterations=100,
+          )
+
+          def measure(plan, samples):
+              plan.execute(strict=True)
+              timings, outputs = [], []
+              for _ in range(samples):
+                  start = perf_counter()
+                  result = plan.execute(strict=True)
+                  timings.append(perf_counter() - start)
+                  items = result.items if hasattr(result, "items") else (result,)
+                  outputs.append([
+                      {
+                          "energy": item.energy,
+                          "iterations": item.iterations,
+                          "converged": item.converged,
+                          "backend": item.executed_backend,
+                      }
+                      for item in items
+                  ])
+              return {
+                  "seconds": timings,
+                  "median_seconds": statistics.median(timings),
+                  "outputs": outputs,
+              }
+
+          calc.singlepoint(atoms, properties=("energy",))
+          with calc.prepare_batch([atoms]) as plan:
+              single = measure(plan, 5)
+          with calc.prepare_batch(systems) as plan:
+              batch4 = measure(plan, 3)
+
+          record = {"label": label, "single": single, "batch4": batch4}
+          with open(output, "w") as f:
+              json.dump(record, f, indent=2)
+          print(json.dumps(record))
+          PY
+
+          for label in base head; do
+            root="/tmp/vq-${label}"
+            PYTHONPATH="$root/python" VIBEQC_LIBRARY="$root/build/libvibeqc.so"               python3 /tmp/pbe_probe.py "$label" "$root" "/tmp/pbe-${label}.json"
+          done
+
+      - name: Compare
+        run: |
+          python3 - <<'PY'
+          import json, statistics
+          with open("/tmp/jonly-base.json") as f: jb = json.load(f)
+          with open("/tmp/jonly-head.json") as f: jh = json.load(f)
+          with open("/tmp/pbe-base.json") as f: pb = json.load(f)
+          with open("/tmp/pbe-head.json") as f: ph = json.load(f)
+
+          summary = {
+              "providers": {
+                  "base_default": jb["default_provider"],
+                  "base_provider_parallel": jb["provider_parallel_provider"],
+                  "head_default": jh["default_provider"],
+                  "head_provider_parallel": jh["provider_parallel_provider"],
+              },
+              "j_rows": [],
+              "pbe": {},
+          }
+          for b, h in zip(jb["rows"], jh["rows"]):
+              bm, hm = statistics.median(b["seconds"]), statistics.median(h["seconds"])
+              summary["j_rows"].append({
+                  "nbf": b["nbf"],
+                  "baseline_median_seconds": bm,
+                  "head_median_seconds": hm,
+                  "ratio": hm / bm,
+                  "checksum_abs_error": abs(b["checksum"] - h["checksum"]),
+              })
+          for endpoint in ("single", "batch4"):
+              max_error = 0.0
+              iterations_equal = True
+              converged = True
+              for bout, hout in zip(pb[endpoint]["outputs"], ph[endpoint]["outputs"]):
+                  iterations_equal &= [x["iterations"] for x in bout] == [x["iterations"] for x in hout]
+                  converged &= all(x["converged"] for x in bout + hout)
+                  for x, y in zip(bout, hout):
+                      max_error = max(max_error, abs(x["energy"] - y["energy"]))
+              summary["pbe"][endpoint] = {
+                  "baseline_median_seconds": pb[endpoint]["median_seconds"],
+                  "head_median_seconds": ph[endpoint]["median_seconds"],
+                  "ratio": ph[endpoint]["median_seconds"] / pb[endpoint]["median_seconds"],
+                  "max_energy_abs_error": max_error,
+                  "iterations_equal": iterations_equal,
+                  "all_converged": converged,
+              }
+          print(json.dumps(summary, indent=2))
+          with open("/tmp/summary.json", "w") as f:
+              json.dump(summary, f, indent=2)
+          assert summary["providers"]["head_provider_parallel"] == "openblas"
+          assert all(x["checksum_abs_error"] < 1e-10 for x in summary["j_rows"])
+          assert all(x["max_energy_abs_error"] < 2e-9 for x in summary["pbe"].values())
+          assert all(x["iterations_equal"] and x["all_converged"] for x in summary["pbe"].values())
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-1277-openblas-provider
+          path: |
+            /tmp/jonly-base.json
+            /tmp/jonly-head.json
+            /tmp/pbe-base.json
+            /tmp/pbe-head.json
+            /tmp/summary.json
+          retention-days: 3
