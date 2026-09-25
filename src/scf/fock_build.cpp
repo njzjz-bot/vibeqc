@@ -6,6 +6,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "tensor/cpu_linalg.hpp"
+
 namespace vibeqc::scf {
 namespace {
 
@@ -349,6 +351,21 @@ DirectJkMatrices build_exact_direct_jk(const ResolvedFockBuild& strategy, std::s
   if (strategy.spec.exchange.present) {
     result.exchange_alpha.resize(count);
     if (unrestricted) result.exchange_beta.resize(count);
+  }
+
+  // Pure restricted Coulomb is exactly a dense (AO-pair)x(AO-pair) matrix-vector
+  // product in the stored chemists-order ERI layout. Provider-parallel ownership
+  // lets older OpenBLAS builds use their guarded process-global thread control;
+  // newer builds with thread-local control stay independently bounded.
+  if (strategy.spec.coulomb.present && !strategy.spec.exchange.present && !unrestricted) {
+    const tensor::CpuLinalgPlan dense_plan{
+        tensor::CpuLinalgProvider::automatic,
+        tensor::CpuLinalgThreadOwnership::provider_parallel,
+        1,
+    };
+    tensor::cpu_gemv('N', count, count, eri.data(), density.data(), result.coulomb.data(), 1.0, 0.0,
+                     dense_plan);
+    return result;
   }
   for (std::size_t i = 0; i < nbf; ++i) {
     for (std::size_t j = 0; j < nbf; ++j) {
