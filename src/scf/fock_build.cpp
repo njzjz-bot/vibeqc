@@ -358,9 +358,11 @@ DirectJkMatrices build_exact_direct_jk(const ResolvedFockBuild& strategy, std::s
   // lets older OpenBLAS builds use their guarded process-global thread control;
   // newer builds with thread-local control stay independently bounded.
   if (strategy.spec.coulomb.present && !strategy.spec.exchange.present && !unrestricted) {
+    constexpr std::size_t kGuardedOpenBlasPairMinimum = 1024;
     const tensor::CpuLinalgPlan dense_plan{
         tensor::CpuLinalgProvider::automatic,
-        tensor::CpuLinalgThreadOwnership::provider_parallel,
+        count >= kGuardedOpenBlasPairMinimum ? tensor::CpuLinalgThreadOwnership::provider_parallel
+                                             : tensor::CpuLinalgThreadOwnership::task_parallel,
         1,
     };
     tensor::cpu_gemv('N', count, count, eri.data(), density.data(), result.coulomb.data(), 1.0, 0.0,
