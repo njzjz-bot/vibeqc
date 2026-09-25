@@ -357,7 +357,13 @@ DirectJkMatrices build_exact_direct_jk(const ResolvedFockBuild& strategy, std::s
   // product in the stored chemists-order ERI layout. Reuse the shared CPU BLAS
   // boundary instead of paying the generic scalar J/K quartet loop when K is absent.
   if (strategy.spec.coulomb.present && !strategy.spec.exchange.present && !unrestricted) {
-    tensor::cpu_gemv('N', count, count, eri.data(), density.data(), result.coulomb.data());
+    const tensor::CpuLinalgPlan dense_plan{
+        tensor::CpuLinalgProvider::automatic,
+        tensor::CpuLinalgThreadOwnership::provider_parallel,
+        1,
+    };
+    tensor::cpu_gemv('N', count, count, eri.data(), density.data(), result.coulomb.data(), 1.0, 0.0,
+                     dense_plan);
     return result;
   }
 
