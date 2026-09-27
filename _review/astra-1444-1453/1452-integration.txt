@@ -1,0 +1,2711 @@
+PR 1452
+head 0f03dd5993bd7dcc0e58b20afdf6cae57df815df
+master c308ff84dd0fb68a83a027ae02206fe98ac7c7ee
+base 492a54ccefda5c093f39f213d3399372374d415e
+bfd068cdaada93e7c4370fb3a85f2c4bc2e441f3
+100644 b58408e696ed06867372a33411fb877348504cea 1	cmake/VibeQCGeneratedSources.cmake
+100644 3b86f2a9865ec27afeb60d4f34e235a95d23061a 2	cmake/VibeQCGeneratedSources.cmake
+100644 6fbcb2d84f1110667e0aa398d91be9049449c742 3	cmake/VibeQCGeneratedSources.cmake
+100644 8cbdb717f6faa7883fa926f4653b455da85fa79a 1	cmake/VibeQCSourceIdentity.json
+100644 f69d8504388c1b362678fdc87755161be0848743 2	cmake/VibeQCSourceIdentity.json
+100644 bd7f3aaacc27291b9ea09316f6c284da11baae94 3	cmake/VibeQCSourceIdentity.json
+
+Auto-merging cmake/VibeQCGeneratedSources.cmake
+CONFLICT (content): Merge conflict in cmake/VibeQCGeneratedSources.cmake
+Auto-merging cmake/VibeQCSourceIdentity.json
+CONFLICT (content): Merge conflict in cmake/VibeQCSourceIdentity.json
+Auto-merging python/vibeqc/_stationary_cpu.py
+
+PR DIFF STAT
+ CMakeLists.txt                                     |   2 +
+ cmake/VibeQCGeneratedSources.cmake                 |  69 +++++
+ cmake/VibeQCSourceIdentity.json                    |   2 +
+ cmake/VibeQCSources.cmake                          |   1 +
+ python/vibeqc/_stationary_cpu.py                   |  23 +-
+ python/vibeqc/_stationary_cpu_components.py        |  79 +++++-
+ python/vibeqc/_stationary_cpu_streaming.py         |  60 ++--
+ python/vibeqc/_stationary_rsh_cpu.py               |  45 ++-
+ .../integral/first_derivative_native.py            |  33 ++-
+ .../integral/first_derivative_schedule.py          |  30 ++
+ python/vibeqc_compiler/integral/rsh_cpu_aot.py     | 109 +++++++
+ .../integral/weighted_eri_execute.py               | 150 +++++++++-
+ .../integral/weighted_eri_native.py                |  43 ++-
+ .../first_derivative_component_runtime.hpp         |   6 +-
+ src/integrals/stationary_component_contract.cpp    |   4 +
+ tests/python/test_ecp_public_cpu.py                |  33 ++-
+ tests/python/test_stationary_cpu_derivative_aot.py | 213 ++++++++++++++
+ tests/python/test_wb97mv_complete.py               |   2 +
+ tests/python/test_wb97mv_rsh_cpu_aot.py            | 314 +++++++++++++++++++++
+ tests/python/test_weighted_eri_binary_identity.py  | 147 ++++++++++
+ tools/generate_stationary_cpu_derivative_aot.py    |  41 +++
+ tools/generate_wb97mv_rsh_cpu_aot.py               |  79 ++++++
+ 22 files changed, 1399 insertions(+), 86 deletions(-)
+
+===== OVERLAP CMakeLists.txt: PR =====
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 714fca5b..522cafd2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -21,6 +21,8 @@ option(VIBEQC_ENABLE_AOT_SHELLS
+        "Build generated shell kernels in addition to the generic CUDA path" ON)
+ option(VIBEQC_ENABLE_STATIONARY_FORCE_AOT
+        "Build packaged stationary CUDA force artifacts" ON)
++option(VIBEQC_ENABLE_STATIONARY_CPU_FORCE_AOT
++       "Build packaged stationary CPU first-derivative artifacts" ON)
+ option(VIBEQC_BUILD_TESTS "Build native tests" ON)
+ option(VIBEQC_PYTHON_WHEEL
+        "Install one unversioned shared library for a Python wheel" OFF)
+
+===== OVERLAP CMakeLists.txt: MASTER =====
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 714fca5b..522cafd2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -21,6 +21,8 @@ option(VIBEQC_ENABLE_AOT_SHELLS
+        "Build generated shell kernels in addition to the generic CUDA path" ON)
+ option(VIBEQC_ENABLE_STATIONARY_FORCE_AOT
+        "Build packaged stationary CUDA force artifacts" ON)
++option(VIBEQC_ENABLE_STATIONARY_CPU_FORCE_AOT
++       "Build packaged stationary CPU first-derivative artifacts" ON)
+ option(VIBEQC_BUILD_TESTS "Build native tests" ON)
+ option(VIBEQC_PYTHON_WHEEL
+        "Install one unversioned shared library for a Python wheel" OFF)
+
+===== OVERLAP cmake/VibeQCGeneratedSources.cmake: PR =====
+diff --git a/cmake/VibeQCGeneratedSources.cmake b/cmake/VibeQCGeneratedSources.cmake
+index b58408e6..3b86f2a9 100644
+--- a/cmake/VibeQCGeneratedSources.cmake
++++ b/cmake/VibeQCGeneratedSources.cmake
+@@ -4,6 +4,75 @@ include_guard(GLOBAL)
+ # live in VibeQCGenerated.cmake; this file owns generator inputs/outputs and the
+ # target(s) that consume each generated family.
+ macro(vibeqc_register_host_generated_sources target)
++  if(VIBEQC_ENABLE_STATIONARY_CPU_FORCE_AOT)
++    set(VIBEQC_STATIONARY_CPU_AOT_DIRECTORY
++        "${CMAKE_CURRENT_BINARY_DIR}/generated/stationary_cpu_derivatives")
++    set(VIBEQC_STATIONARY_CPU_AOT_SOURCES)
++    foreach(_vibeqc_stationary_cpu_shard RANGE 0 45)
++      list(APPEND VIBEQC_STATIONARY_CPU_AOT_SOURCES
++           "${VIBEQC_STATIONARY_CPU_AOT_DIRECTORY}/vibeqc_stationary_cpu_derivative_${_vibeqc_stationary_cpu_shard}.cpp")
++    endforeach()
++    vibeqc_register_generated_sources(
++      NAME vibeqc_stationary_cpu_derivatives_codegen
++      TARGET ${target}
++      ADD_TO_TARGET
++      GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_stationary_cpu_derivative_aot.py"
++      OUTPUTS ${VIBEQC_STATIONARY_CPU_AOT_SOURCES}
++      DEPENDS
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/expr.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/first_derivative_native.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/first_derivative_schedule.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/one_electron_derivatives.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/range_separation.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/scalar_c.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/shell_spec.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_cuda.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_native.py"
++      ARGS --output-directory "${VIBEQC_STATIONARY_CPU_AOT_DIRECTORY}"
++      COMPILE_OPTIONS "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-ffp-contract=off>"
++      COMMENT "Generating packaged stationary CPU s/p/d derivative inventory")
++  endif()
++
++  if(VIBEQC_ENABLE_STATIONARY_CPU_FORCE_AOT)
++    set(VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY
++        "${CMAKE_CURRENT_BINARY_DIR}/generated/wb97mv_rsh_cpu")
++    set(VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES)
++    foreach(_vibeqc_rsh_family IN ITEMS sr lr)
++      foreach(_a RANGE 0 1)
++        foreach(_b RANGE 0 1)
++          foreach(_c RANGE 0 1)
++            foreach(_d RANGE 0 1)
++              set(_vibeqc_rsh_shell "${_a}${_b}${_c}${_d}")
++              list(APPEND VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES
++                   "${VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY}/vibeqc_wb97mv_rsh_${_vibeqc_rsh_family}_${_vibeqc_rsh_shell}_0.cpp")
++              if(_vibeqc_rsh_shell STREQUAL "1111")
++                list(APPEND VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES
++                     "${VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY}/vibeqc_wb97mv_rsh_${_vibeqc_rsh_family}_1111_1.cpp")
++              endif()
++            endforeach()
++          endforeach()
++        endforeach()
++      endforeach()
++    endforeach()
++    vibeqc_register_generated_sources(
++      NAME vibeqc_wb97mv_rsh_cpu_aot_codegen
++      TARGET ${target}
++      ADD_TO_TARGET
++      GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_wb97mv_rsh_cpu_aot.py"
++      OUTPUTS ${VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES}
++      DEPENDS
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/rsh_cpu_aot.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_native.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_cuda.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/spec.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/_generated_libxc_methods.py"
++      ARGS --output-directory "${VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY}"
++      COMPILE_OPTIONS "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-ffp-contract=off>"
++      COMMENT "Generating packaged WB97M-V CPU SR/LR derivative programs")
++  endif()
++
+   set(VIBEQC_QUADRATURE_HEADER
+       "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_quadrature.cuh")
+   vibeqc_register_generated_sources(
+
+===== OVERLAP cmake/VibeQCGeneratedSources.cmake: MASTER =====
+diff --git a/cmake/VibeQCGeneratedSources.cmake b/cmake/VibeQCGeneratedSources.cmake
+index b58408e6..6fbcb2d8 100644
+--- a/cmake/VibeQCGeneratedSources.cmake
++++ b/cmake/VibeQCGeneratedSources.cmake
+@@ -4,6 +4,36 @@ include_guard(GLOBAL)
+ # live in VibeQCGenerated.cmake; this file owns generator inputs/outputs and the
+ # target(s) that consume each generated family.
+ macro(vibeqc_register_host_generated_sources target)
++  if(VIBEQC_ENABLE_STATIONARY_CPU_FORCE_AOT)
++    set(VIBEQC_STATIONARY_CPU_AOT_DIRECTORY
++        "${CMAKE_CURRENT_BINARY_DIR}/generated/stationary_cpu_derivatives")
++    set(VIBEQC_STATIONARY_CPU_AOT_SOURCES)
++    foreach(_vibeqc_stationary_cpu_shard RANGE 0 45)
++      list(APPEND VIBEQC_STATIONARY_CPU_AOT_SOURCES
++           "${VIBEQC_STATIONARY_CPU_AOT_DIRECTORY}/vibeqc_stationary_cpu_derivative_${_vibeqc_stationary_cpu_shard}.cpp")
++    endforeach()
++    vibeqc_register_generated_sources(
++      NAME vibeqc_stationary_cpu_derivatives_codegen
++      TARGET ${target}
++      ADD_TO_TARGET
++      GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_stationary_cpu_derivative_aot.py"
++      OUTPUTS ${VIBEQC_STATIONARY_CPU_AOT_SOURCES}
++      DEPENDS
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/expr.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/first_derivative_native.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/first_derivative_schedule.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/one_electron_derivatives.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/range_separation.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/scalar_c.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/shell_spec.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_cuda.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_native.py"
++      ARGS --output-directory "${VIBEQC_STATIONARY_CPU_AOT_DIRECTORY}"
++      COMPILE_OPTIONS "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-ffp-contract=off>"
++      COMMENT "Generating packaged stationary CPU s/p/d derivative inventory")
++  endif()
++
+   set(VIBEQC_QUADRATURE_HEADER
+       "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_quadrature.cuh")
+   vibeqc_register_generated_sources(
+
+===== CONFLICTED CONTENT cmake/VibeQCGeneratedSources.cmake =====
+include_guard(GLOBAL)
+
+# Project-level generated-source declarations. The generic command mechanics
+# live in VibeQCGenerated.cmake; this file owns generator inputs/outputs and the
+# target(s) that consume each generated family.
+macro(vibeqc_register_host_generated_sources target)
+  if(VIBEQC_ENABLE_STATIONARY_CPU_FORCE_AOT)
+    set(VIBEQC_STATIONARY_CPU_AOT_DIRECTORY
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/stationary_cpu_derivatives")
+    set(VIBEQC_STATIONARY_CPU_AOT_SOURCES)
+    foreach(_vibeqc_stationary_cpu_shard RANGE 0 45)
+      list(APPEND VIBEQC_STATIONARY_CPU_AOT_SOURCES
+           "${VIBEQC_STATIONARY_CPU_AOT_DIRECTORY}/vibeqc_stationary_cpu_derivative_${_vibeqc_stationary_cpu_shard}.cpp")
+    endforeach()
+    vibeqc_register_generated_sources(
+      NAME vibeqc_stationary_cpu_derivatives_codegen
+      TARGET ${target}
+      ADD_TO_TARGET
+      GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_stationary_cpu_derivative_aot.py"
+      OUTPUTS ${VIBEQC_STATIONARY_CPU_AOT_SOURCES}
+      DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/expr.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/first_derivative_native.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/first_derivative_schedule.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/one_electron_derivatives.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/range_separation.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/scalar_c.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/shell_spec.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_cuda.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_native.py"
+      ARGS --output-directory "${VIBEQC_STATIONARY_CPU_AOT_DIRECTORY}"
+      COMPILE_OPTIONS "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-ffp-contract=off>"
+      COMMENT "Generating packaged stationary CPU s/p/d derivative inventory")
+  endif()
+
+<<<<<<< 0f03dd5993bd7dcc0e58b20afdf6cae57df815df
+  if(VIBEQC_ENABLE_STATIONARY_CPU_FORCE_AOT)
+    set(VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/wb97mv_rsh_cpu")
+    set(VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES)
+    foreach(_vibeqc_rsh_family IN ITEMS sr lr)
+      foreach(_a RANGE 0 1)
+        foreach(_b RANGE 0 1)
+          foreach(_c RANGE 0 1)
+            foreach(_d RANGE 0 1)
+              set(_vibeqc_rsh_shell "${_a}${_b}${_c}${_d}")
+              list(APPEND VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES
+                   "${VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY}/vibeqc_wb97mv_rsh_${_vibeqc_rsh_family}_${_vibeqc_rsh_shell}_0.cpp")
+              if(_vibeqc_rsh_shell STREQUAL "1111")
+                list(APPEND VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES
+                     "${VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY}/vibeqc_wb97mv_rsh_${_vibeqc_rsh_family}_1111_1.cpp")
+              endif()
+            endforeach()
+          endforeach()
+        endforeach()
+      endforeach()
+    endforeach()
+    vibeqc_register_generated_sources(
+      NAME vibeqc_wb97mv_rsh_cpu_aot_codegen
+      TARGET ${target}
+      ADD_TO_TARGET
+      GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_wb97mv_rsh_cpu_aot.py"
+      OUTPUTS ${VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES}
+      DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/rsh_cpu_aot.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_native.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_cuda.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/spec.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/_generated_libxc_methods.py"
+      ARGS --output-directory "${VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY}"
+      COMPILE_OPTIONS "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-ffp-contract=off>"
+      COMMENT "Generating packaged WB97M-V CPU SR/LR derivative programs")
+  endif()
+
+=======
+>>>>>>> c308ff84dd0fb68a83a027ae02206fe98ac7c7ee
+  set(VIBEQC_QUADRATURE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_quadrature.cuh")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_quadrature_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_quadrature_cuda.py"
+    OUTPUTS "${VIBEQC_QUADRATURE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/quadrature_cuda.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/grid_response_ir.py"
+    ARGS --output "${VIBEQC_QUADRATURE_HEADER}"
+    COMMENT "Generating bounded CUDA molecular quadrature")
+  set(VIBEQC_DF_EXCHANGE_SCHEDULE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_exchange_schedule.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_df_exchange_schedule_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_exchange_schedule.py"
+    OUTPUTS "${VIBEQC_DF_EXCHANGE_SCHEDULE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/df_exchange_schedule.py"
+    ARGS --output "${VIBEQC_DF_EXCHANGE_SCHEDULE_HEADER}"
+    COMMENT "Generating compiler-owned DF source-reuse schedule")
+
+  # The native host policy is built even when CUDA execution is disabled.
+  # Generate its CUDA-independent constants once for both build variants.
+  set(VIBEQC_ONE_ELECTRON_DERIVATIVE_POLICY_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_one_electron_derivative_policy.cuh")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_one_electron_derivative_policy_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_one_electron_kernels.py"
+    OUTPUTS "${VIBEQC_ONE_ELECTRON_DERIVATIVE_POLICY_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_kernels.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/cooperative_schedule.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/one_electron_derivative_policy_cuda.py"
+    ARGS --derivatives --derivative-policy-output "${VIBEQC_ONE_ELECTRON_DERIVATIVE_POLICY_HEADER}")
+
+  set(VIBEQC_METHOD_PARAMETERS_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_method_parameters.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_method_parameters_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_method_parameters.py"
+    OUTPUTS "${VIBEQC_METHOD_PARAMETERS_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/method_parameters.json"
+    ARGS
+      --source "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/method_parameters.json"
+      --cpp-output "${VIBEQC_METHOD_PARAMETERS_HEADER}"
+    COMMENT "Generating audited method parameter constants")
+
+  set(VIBEQC_D4_DERIVATIVE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_d4_derivative.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_d4_derivative_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_d4_derivative.py"
+    OUTPUTS "${VIBEQC_D4_DERIVATIVE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/d4_derivative.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/common/provenance.py"
+    ARGS --output "${VIBEQC_D4_DERIVATIVE_HEADER}"
+    COMMENT "Generating compiler-owned D4 EEQ derivative lowering")
+
+  set(VIBEQC_D3_DATA_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/d3_data.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_d3_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/vibeqc_d3/generate_native_data.py"
+    OUTPUTS "${VIBEQC_D3_DATA_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/data/parameters/d3_production.bin"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/common/d3_data.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/manifests/xtbloom-d3.json"
+    ARGS --output "${VIBEQC_D3_DATA_HEADER}"
+    COMMENT "Generating pinned compact D3(BJ) tables")
+  set(VIBEQC_ONE_ELECTRON_ST_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_one_electron_st_cpu.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_one_electron_st_cpu_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_one_electron_kernels.py"
+    OUTPUTS "${VIBEQC_ONE_ELECTRON_ST_CPU_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_kernels.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/one_electron_cpu.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/one_electron_cuda.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/one_electron_derivatives_cuda.py"
+    ARGS --cpu-st-output "${VIBEQC_ONE_ELECTRON_ST_CPU_HEADER}")
+
+  set(VIBEQC_DF_VALUE_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_values_cpu.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_df_values_cpu_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_kernels.py"
+    OUTPUTS "${VIBEQC_DF_VALUE_CPU_HEADER}"
+    ARGS
+      --cpu
+      --output "${VIBEQC_DF_VALUE_CPU_HEADER}")
+
+  set(VIBEQC_DF_DERIVATIVE_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_derivatives_cpu.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_df_derivatives_cpu_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_kernels.py"
+    OUTPUTS "${VIBEQC_DF_DERIVATIVE_CPU_HEADER}"
+    ARGS
+      --derivatives
+      --cpu
+      --output "${VIBEQC_DF_DERIVATIVE_CPU_HEADER}")
+
+  set(VIBEQC_XC_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/xc_cpu_generated.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_xc_cpu_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_xc_cpu.py"
+    OUTPUTS "${VIBEQC_XC_CPU_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/semilocal_codegen.py"
+    ARGS --output "${VIBEQC_XC_CPU_HEADER}")
+
+  set(VIBEQC_SCF_ARRAY_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_scf_array_native.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_scf_array_cpu_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_scf_array_native.py"
+    OUTPUTS "${VIBEQC_SCF_ARRAY_CPU_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/array_api/scf.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scf.py"
+    ARGS --output "${VIBEQC_SCF_ARRAY_CPU_HEADER}"
+    COMMENT "Generating Array frontend SCF CPU tensor helpers")
+
+  if(VIBEQC_ENABLE_CUDA)
+    set(VIBEQC_SCF_DENSITY_CUDA_HEADER
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_scf_density_cuda.cuh")
+    vibeqc_register_generated_sources(
+      NAME vibeqc_scf_density_cuda_codegen
+      TARGET ${target}
+      GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_scf_density_cuda.py"
+      OUTPUTS "${VIBEQC_SCF_DENSITY_CUDA_HEADER}"
+      DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scf.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scf_cuda.py"
+      ARGS --output "${VIBEQC_SCF_DENSITY_CUDA_HEADER}"
+      COMMENT "Generating compiler-owned CUDA SCF density kernel")
+  endif()
+
+  set(VIBEQC_GFN2_PAIR_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_gfn2_pair_native.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_gfn2_pair_cpu_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gfn2_pair_native.py"
+    OUTPUTS "${VIBEQC_GFN2_PAIR_CPU_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/geometry/gfn2_pair.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/ad_program.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scalar_cpp.py"
+    ARGS --output "${VIBEQC_GFN2_PAIR_CPU_HEADER}"
+    COMMENT "Generating compiler-owned GFN2 CPU pair kernels")
+
+  set(VIBEQC_GFN2_AES2_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_gfn2_aes2_native.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_gfn2_aes2_cpu_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gfn2_aes2_native.py"
+    OUTPUTS "${VIBEQC_GFN2_AES2_CPU_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/gfn2_aes2.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/ad_program.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scalar_cpp.py"
+    ARGS --cpu-output "${VIBEQC_GFN2_AES2_CPU_HEADER}"
+    COMMENT "Generating compiler-owned GFN2 AES2 CPU kernels")
+
+  set(VIBEQC_GFN2_ES2_NATIVE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_gfn2_es2_native.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_gfn2_es2_native_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gfn2_es2_native.py"
+    OUTPUTS "${VIBEQC_GFN2_ES2_NATIVE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/gfn2_es2_runtime.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/ad_program.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scalar_cpp.py"
+    ARGS --output "${VIBEQC_GFN2_ES2_NATIVE_HEADER}"
+    COMMENT "Generating compiler-owned GFN2 ES2 scalar kernels")
+
+  set(VIBEQC_GFN2_H0_NATIVE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_gfn2_h0_native.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_gfn2_h0_native_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gfn2_h0_native.py"
+    OUTPUTS "${VIBEQC_GFN2_H0_NATIVE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/gfn2_h0_force_runtime.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/ad_program.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scalar_cpp.py"
+    ARGS --output "${VIBEQC_GFN2_H0_NATIVE_HEADER}"
+    COMMENT "Generating compiler-owned GFN2 CPU/CUDA H0 values and adjoints")
+  if(TARGET vibeqc_gfn2_cuda)
+    add_dependencies(vibeqc_gfn2_cuda vibeqc_gfn2_h0_native_codegen)
+  endif()
+
+  set(VIBEQC_GFN2_SPIN_NATIVE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_gfn2_spin_native.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_gfn2_spin_native_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gfn2_spin_native.py"
+    OUTPUTS "${VIBEQC_GFN2_SPIN_NATIVE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/gfn2_spin_runtime.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/ad_program.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scalar_cpp.py"
+    ARGS --output "${VIBEQC_GFN2_SPIN_NATIVE_HEADER}"
+    COMMENT "Generating compiler-owned GFN2 CPU/CUDA spin energy/potential")
+  if(TARGET vibeqc_gfn2_cuda)
+    add_dependencies(vibeqc_gfn2_cuda vibeqc_gfn2_spin_native_codegen)
+  endif()
+
+  set(VIBEQC_GFN2_ES3_NATIVE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_gfn2_es3_native.cuh")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_gfn2_es3_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gfn2_es3_native.py"
+    OUTPUTS "${VIBEQC_GFN2_ES3_NATIVE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/gfn2_es3_runtime.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/ad_program.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scalar_cpp.py"
+    ARGS --output "${VIBEQC_GFN2_ES3_NATIVE_HEADER}"
+    COMMENT "Generating compiler-owned GFN2 ES3 shell energy/potential")
+  if(TARGET vibeqc_gfn2_cuda)
+    add_dependencies(vibeqc_gfn2_cuda vibeqc_gfn2_es3_codegen)
+    target_include_directories(
+      vibeqc_gfn2_cuda PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  endif()
+
+  set(VIBEQC_GFN2_SCC_FREE_ENERGY_NATIVE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_gfn2_scc_free_energy_native.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_gfn2_scc_free_energy_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gfn2_scc_free_energy_native.py"
+    OUTPUTS "${VIBEQC_GFN2_SCC_FREE_ENERGY_NATIVE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/gfn2_scc_free_energy_runtime.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scalar_cpp.py"
+    ARGS --output "${VIBEQC_GFN2_SCC_FREE_ENERGY_NATIVE_HEADER}"
+    COMMENT "Generating compiler-owned GFN2 SCC internal/free-energy composition")
+  if(TARGET vibeqc_gfn2_cuda)
+    add_dependencies(vibeqc_gfn2_cuda vibeqc_gfn2_scc_free_energy_codegen)
+    target_include_directories(
+      vibeqc_gfn2_cuda PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  endif()
+
+  set(VIBEQC_GFN2_ELECTRONIC_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_gfn2_electronic_native.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_gfn2_electronic_cpu_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gfn2_electronic_native.py"
+    OUTPUTS "${VIBEQC_GFN2_ELECTRONIC_CPU_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/gfn2_electronic_runtime.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/ad_program.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scalar_cpp.py"
+    ARGS --output "${VIBEQC_GFN2_ELECTRONIC_CPU_HEADER}"
+    COMMENT "Generating compiler-owned GFN2 CPU electronic kernels")
+
+  file(GLOB VIBEQC_RCCSD_GENERATOR_INPUTS CONFIGURE_DEPENDS
+       "${CMAKE_CURRENT_SOURCE_DIR}/tools/vibeqc_cc/*.py")
+  set(VIBEQC_GFN2_SDQ_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_gfn2_sdq_native.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_gfn2_sdq_cpu_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gfn2_sdq_native.py"
+    OUTPUTS "${VIBEQC_GFN2_SDQ_CPU_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/gfn2_sdq.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/gfn2_sdq_cpu.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/one_electron_values.py"
+    ARGS --output "${VIBEQC_GFN2_SDQ_CPU_HEADER}"
+    COMMENT "Generating compiler-owned GFN2 S/D/Q CPU primitive kernels")
+
+  set(VIBEQC_RCCSD_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_rccsd_cpu.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_rccsd_cpu_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rccsd_native.py"
+    OUTPUTS "${VIBEQC_RCCSD_CPU_HEADER}"
+    DEPENDS ${VIBEQC_RCCSD_GENERATOR_INPUTS}
+    ARGS --cpu-header "${VIBEQC_RCCSD_CPU_HEADER}")
+
+  set(VIBEQC_RCCSDT_CPU_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_rccsdt_cpu.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_rccsdt_cpu_codegen
+    TARGET ${target}
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rccsdt_native.py"
+    OUTPUTS "${VIBEQC_RCCSDT_CPU_HEADER}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/vibeqc_cc/triples.py"
+    ARGS --output "${VIBEQC_RCCSDT_CPU_HEADER}")
+
+  set(VIBEQC_DF_HF_RESPONSE_CONTRACT_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_hf_response_contract.hpp")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_df_hf_response_contract_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_hf_response.py"
+    OUTPUTS "${VIBEQC_DF_HF_RESPONSE_CONTRACT_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/df_hf_response_contract.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/df_hf_response_cuda.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/df_occupied_response_cuda.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/cuda_dtype.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/cuda_gemm.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/ir.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/types.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/common/layout.py"
+    ARGS --contract-output "${VIBEQC_DF_HF_RESPONSE_CONTRACT_HEADER}")
+
+  set(VIBEQC_ECP_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_ecp_ao.cuh")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_ecp_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_ecp_kernels.py"
+    OUTPUTS "${VIBEQC_ECP_HEADER}"
+    ARGS --output "${VIBEQC_ECP_HEADER}")
+endmacro()
+
+macro(vibeqc_register_cuda_generated_sources target)
+  set(VIBEQC_MEAN_FIELD_SETUP_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_mean_field_setup.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_mean_field_setup_cuda.py"
+    OUTPUTS "${VIBEQC_MEAN_FIELD_SETUP_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_scf_array_native.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/mean_field_setup_cuda.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scf.py"
+    ARGS --output "${VIBEQC_MEAN_FIELD_SETUP_HEADER}"
+    COMMENT "Generating shared CUDA mean-field setup projectors")
+
+  set(VIBEQC_MATRIX_FUNCTION_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_symmetric_matrix_function.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_matrix_function_cuda.py"
+    OUTPUTS "${VIBEQC_MATRIX_FUNCTION_HEADER}"
+    ARGS --output "${VIBEQC_MATRIX_FUNCTION_HEADER}")
+
+  set(VIBEQC_DF_HF_RESPONSE_CUDA_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_hf_response.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_hf_response.py"
+    OUTPUTS "${VIBEQC_DF_HF_RESPONSE_CUDA_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/df_hf_response_contract.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/df_hf_response_cuda.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/df_occupied_response_cuda.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/cuda_dtype.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/cuda_gemm.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/ir.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/types.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/common/layout.py"
+    ARGS --cuda-output "${VIBEQC_DF_HF_RESPONSE_CUDA_HEADER}")
+
+  set(VIBEQC_DF_GENERATED_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/df_values.cuh")
+  set(VIBEQC_DF_POLICY_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_policy.cuh")
+  set(VIBEQC_DF_VALUE_CANDIDATE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_value_candidates.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_kernels.py"
+    OUTPUTS
+      "${VIBEQC_DF_GENERATED_HEADER}"
+      "${VIBEQC_DF_POLICY_HEADER}"
+      "${VIBEQC_DF_VALUE_CANDIDATE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/production_df_values.json"
+    ARGS
+      --output "${VIBEQC_DF_GENERATED_HEADER}"
+      --policy-output "${VIBEQC_DF_POLICY_HEADER}")
+
+  # The native views and compiler both admit all 4^3 s/p/d/f classes. Keep
+  # stable per-class output paths; profile edits must not reshuffle units.
+  set(VIBEQC_DF_SHELL_UNIT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/df_shells")
+  set(VIBEQC_DF_SHELL_SOURCES)
+  set(VIBEQC_DF_SHELL_UNIT_OUTPUTS
+      "${VIBEQC_DF_SHELL_UNIT_DIRECTORY}/generated_df_shell_dispatch.hpp")
+  foreach(_a RANGE 0 3)
+    foreach(_b RANGE 0 3)
+      foreach(_c RANGE 0 3)
+        set(_class "${_a}${_b}${_c}")
+        list(APPEND VIBEQC_DF_SHELL_SOURCES
+             "${VIBEQC_DF_SHELL_UNIT_DIRECTORY}/df_shell_${_class}.cu")
+        foreach(_header IN ITEMS polynomial math)
+          list(APPEND VIBEQC_DF_SHELL_UNIT_OUTPUTS
+               "${VIBEQC_DF_SHELL_UNIT_DIRECTORY}/df_shell_${_header}_${_class}.cuh")
+        endforeach()
+        list(APPEND VIBEQC_DF_SHELL_UNIT_OUTPUTS
+             "${VIBEQC_DF_SHELL_UNIT_DIRECTORY}/df_shell_policy_${_class}.hpp")
+      endforeach()
+    endforeach()
+  endforeach()
+  target_include_directories(${target} PRIVATE "${VIBEQC_DF_SHELL_UNIT_DIRECTORY}")
+
+  set(VIBEQC_DF_DERIVATIVE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_derivatives.cuh")
+  set(VIBEQC_DF_DERIVATIVE_POLICY_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_derivative_policy.cuh")
+  set(VIBEQC_DF_DERIVATIVE_SCHEDULE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_derivative_schedule.cuh")
+  set(VIBEQC_DF_SHELL_DERIVATIVE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_shell_derivatives.cuh")
+  set(VIBEQC_DF_RYS_HEADERS
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_rys.cuh"
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_rys_policy.hpp"
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_production.hpp"
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_screening.cuh"
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_df_rys_shell.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_kernels.py"
+    OUTPUTS
+      "${VIBEQC_DF_DERIVATIVE_HEADER}"
+      "${VIBEQC_DF_DERIVATIVE_POLICY_HEADER}"
+      "${VIBEQC_DF_DERIVATIVE_SCHEDULE_HEADER}"
+      "${VIBEQC_DF_SHELL_DERIVATIVE_HEADER}"
+      ${VIBEQC_DF_RYS_HEADERS}
+      ${VIBEQC_DF_SHELL_SOURCES}
+      ${VIBEQC_DF_SHELL_UNIT_OUTPUTS}
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/production_df_derivatives.json"
+    ARGS
+      --derivatives
+      --output "${VIBEQC_DF_DERIVATIVE_HEADER}"
+      --policy-output "${VIBEQC_DF_DERIVATIVE_POLICY_HEADER}"
+      --schedule-output "${VIBEQC_DF_DERIVATIVE_SCHEDULE_HEADER}"
+      --shell-output "${VIBEQC_DF_SHELL_DERIVATIVE_HEADER}"
+      --shell-units-directory "${VIBEQC_DF_SHELL_UNIT_DIRECTORY}")
+
+  set(VIBEQC_ONE_ELECTRON_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_one_electron_values.cuh")
+  set(VIBEQC_ONE_ELECTRON_POLICY_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_one_electron_policy.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_one_electron_kernels.py"
+    OUTPUTS
+      "${VIBEQC_ONE_ELECTRON_HEADER}"
+      "${VIBEQC_ONE_ELECTRON_POLICY_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_kernels.py"
+    ARGS
+      --output "${VIBEQC_ONE_ELECTRON_HEADER}"
+      --policy-output "${VIBEQC_ONE_ELECTRON_POLICY_HEADER}")
+
+  set(VIBEQC_ONE_ELECTRON_DERIVATIVE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_one_electron_derivatives.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_one_electron_kernels.py"
+    OUTPUTS "${VIBEQC_ONE_ELECTRON_DERIVATIVE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_df_kernels.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/cooperative_schedule.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/one_electron_derivative_policy_cuda.py"
+    ARGS --derivatives --output "${VIBEQC_ONE_ELECTRON_DERIVATIVE_HEADER}")
+
+  set(VIBEQC_COSX_DERIVATIVE_CONTRACTION_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_cosx_derivative_contractions.cuh")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_cosx_derivative_contraction_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cosx_derivative_native.py"
+    OUTPUTS "${VIBEQC_COSX_DERIVATIVE_CONTRACTION_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/cosx_derivative_runtime.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/scalar_cpp.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/ir.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/program.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/types.py"
+    ARGS --output "${VIBEQC_COSX_DERIVATIVE_CONTRACTION_HEADER}"
+    COMMENT "Generating compiler-owned COSX derivative contractions")
+
+  set(VIBEQC_GFN2_SDQ_CUDA_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_gfn2_sdq_cuda.cuh")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_gfn2_sdq_cuda_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_gfn2_sdq_native.py"
+    OUTPUTS "${VIBEQC_GFN2_SDQ_CUDA_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/gfn2_sdq.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/gfn2_sdq_cpu.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/one_electron_values.py"
+    ARGS --cuda-output "${VIBEQC_GFN2_SDQ_CUDA_HEADER}"
+    COMMENT "Generating compiler-owned GFN2 S/D/Q CUDA primitive kernels")
+
+  set(VIBEQC_DIRECT_FOCK_ACCUMULATION_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_direct_fock_accumulation.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_shell_kernels.py"
+    OUTPUTS "${VIBEQC_DIRECT_FOCK_ACCUMULATION_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/lowering/fock_accumulation.py"
+    ARGS
+      --direct-fock-accumulation-output "${VIBEQC_DIRECT_FOCK_ACCUMULATION_HEADER}"
+    COMMENT "Generating compiler-owned Direct-Fock scatter contraction")
+
+  set(VIBEQC_WEIGHTED_ERI_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/weighted_eri.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_weighted_eri_kernels.py"
+    OUTPUTS "${VIBEQC_WEIGHTED_ERI_HEADER}"
+    ARGS --output "${VIBEQC_WEIGHTED_ERI_HEADER}")
+
+  set(VIBEQC_DIRECT_RESIDENT_PSSS_SCHEDULE_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_direct_resident_psss_schedule.cuh")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_direct_resident_psss_schedule_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_direct_resident_schedule.py"
+    OUTPUTS "${VIBEQC_DIRECT_RESIDENT_PSSS_SCHEDULE_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/direct_resident_schedule.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/cuda_schedule.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/shell_spec.py"
+    ARGS --output "${VIBEQC_DIRECT_RESIDENT_PSSS_SCHEDULE_HEADER}"
+    COMMENT "Generating compiler-owned Direct-HF resident-PSSS schedule")
+
+  set(VIBEQC_DIRECT_HIGH_ORDER_PAIR_GRADIENT_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_direct_high_order_pair_gradient.cuh")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_direct_high_order_pair_gradient_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_direct_pair_gradient.py"
+    OUTPUTS "${VIBEQC_DIRECT_HIGH_ORDER_PAIR_GRADIENT_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/direct_pair_gradient_cuda.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/coulomb_recurrence_cuda.py"
+    ARGS --output "${VIBEQC_DIRECT_HIGH_ORDER_PAIR_GRADIENT_HEADER}"
+    COMMENT "Generating compiler-owned Direct-HF high-order pair-gradient helper")
+
+  set(VIBEQC_B3LYP_CUDA_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_b3lyp_device.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_xc_b3lyp_cuda.py"
+    OUTPUTS "${VIBEQC_B3LYP_CUDA_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/semilocal_codegen.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/b3lyp_production_policy.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/spec.py"
+    ARGS --output "${VIBEQC_B3LYP_CUDA_HEADER}")
+
+  set(VIBEQC_R2SCAN_CUDA_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_r2scan_device.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_xc_r2scan_cuda.py"
+    OUTPUTS "${VIBEQC_R2SCAN_CUDA_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/semilocal_codegen.py"
+    ARGS --output "${VIBEQC_R2SCAN_CUDA_HEADER}")
+
+  set(VIBEQC_WB97MV_CUDA_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_wb97mv_device.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_xc_wb97mv_cuda.py"
+    OUTPUTS "${VIBEQC_WB97MV_CUDA_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/semilocal_codegen.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/wb97mv_maple.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/spec.py"
+    ARGS --output "${VIBEQC_WB97MV_CUDA_HEADER}")
+
+  set(VIBEQC_SPLIT_HYBRID_CUDA_HEADER
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_split_hybrid_registry.cuh")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_xc_split_hybrid_registry.py"
+    OUTPUTS "${VIBEQC_SPLIT_HYBRID_CUDA_HEADER}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/manifests/cuda_split_hybrids.json"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_xc_split_hybrid_cuda.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/libxc_split_hybrid.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/libxc_bulk_metadata.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/libxc_method_metadata.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/libxc_bulk.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/libxc_bulk_catalog.json"
+      "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/xc/libxc_maple.py"
+    ARGS --output "${VIBEQC_SPLIT_HYBRID_CUDA_HEADER}")
+
+  set(VIBEQC_GRID_SOURCE
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_grid_policy.cu")
+  # The r2SCAN minority-spin derivative is sensitive to contraction of 1-zeta
+  # near the work-density floor. Match the compiler XC FP64 policy and the
+  # independent Libxc boundary qualification; do not introduce FMA. CuMetal's
+  # nvcc-compatible driver delegates to Clang and requires its native spelling.
+  if(VIBEQC_CUDA_PROVIDER STREQUAL "cumetal")
+    set(_vibeqc_grid_fp_contract_option -ffp-contract=off)
+  else()
+    set(_vibeqc_grid_fp_contract_option --fmad=false)
+  endif()
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_grid_kernels.py"
+    OUTPUTS "${VIBEQC_GRID_SOURCE}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/dft/cuda_xc_kernels.cuh"
+      "${VIBEQC_B3LYP_CUDA_HEADER}"
+      "${VIBEQC_R2SCAN_CUDA_HEADER}"
+      "${VIBEQC_WB97MV_CUDA_HEADER}"
+      "${VIBEQC_SPLIT_HYBRID_CUDA_HEADER}"
+    COMPILE_OPTIONS "${_vibeqc_grid_fp_contract_option}"
+    ARGS --output "${VIBEQC_GRID_SOURCE}")
+
+  set(VIBEQC_XC_GRADIENT_SOURCE
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_xc_gradient.cu")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_xc_gradient_cuda.py"
+    OUTPUTS "${VIBEQC_XC_GRADIENT_SOURCE}"
+    ARGS --output "${VIBEQC_XC_GRADIENT_SOURCE}")
+
+  set(VIBEQC_RCCSD_CUDA_SOURCE
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_rccsd_cuda.cu")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_rccsd_cuda_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rccsd_native.py"
+    OUTPUTS "${VIBEQC_RCCSD_CUDA_SOURCE}"
+    DEPENDS ${VIBEQC_RCCSD_GENERATOR_INPUTS}
+    ARGS --cuda-source "${VIBEQC_RCCSD_CUDA_SOURCE}")
+
+  set(VIBEQC_RCCSDT_CUDA_SOURCE
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_rccsdt_cuda.cu")
+  vibeqc_register_generated_sources(
+    NAME vibeqc_rccsdt_cuda_codegen
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rccsdt_cuda.py"
+    OUTPUTS "${VIBEQC_RCCSDT_CUDA_SOURCE}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rccsdt_cuda.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_rccsdt_native.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/vibeqc_cc/triples.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/cc/triples_cuda.hpp"
+    ARGS --output "${VIBEQC_RCCSDT_CUDA_SOURCE}")
+
+  set(VIBEQC_MP2_GENERATED_DIRECTORY
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/mp2")
+  set(VIBEQC_MP2_GENERATED_SOURCES
+      "${VIBEQC_MP2_GENERATED_DIRECTORY}/mp2_cuda_table.cu")
+  set(VIBEQC_MP2_ARCHITECTURES "")
+  foreach(_arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
+    string(REGEX REPLACE "-.*$" "" _numeric_arch "${_arch}")
+    list(APPEND VIBEQC_MP2_ARCHITECTURES "${_numeric_arch}")
+  endforeach()
+  list(REMOVE_DUPLICATES VIBEQC_MP2_ARCHITECTURES)
+  foreach(_arch IN LISTS VIBEQC_MP2_ARCHITECTURES)
+    foreach(_tile 1 2 4 8)
+      list(APPEND VIBEQC_MP2_GENERATED_SOURCES
+           "${VIBEQC_MP2_GENERATED_DIRECTORY}/mp2_sm${_arch}_t${_tile}_runtime.cu")
+    endforeach()
+  endforeach()
+  file(GLOB VIBEQC_MP2_GENERATOR_INPUTS CONFIGURE_DEPENDS
+       "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/tensor/*.py"
+       "python/vibeqc_compiler/common/cuda_target.py"
+       "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/common/source_reuse.py"
+       "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/mp2_schedule.py"
+       "${CMAKE_CURRENT_SOURCE_DIR}/tools/vibeqc_mp2/*.py"
+       "${CMAKE_CURRENT_SOURCE_DIR}/tools/vibeqc_posthf/*.py")
+  vibeqc_register_generated_sources(
+    TARGET ${target}
+    ADD_TO_TARGET
+    GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_mp2_native.py"
+    OUTPUTS ${VIBEQC_MP2_GENERATED_SOURCES}
+    DEPENDS ${VIBEQC_MP2_GENERATOR_INPUTS}
+    ARGS
+      --cuda-dir "${VIBEQC_MP2_GENERATED_DIRECTORY}"
+      --architectures "${VIBEQC_MP2_ARCHITECTURES}")
+endmacro()
+
+macro(vibeqc_add_codegen_pilot)
+  if(Python3_Interpreter_FOUND)
+    set(VIBEQC_CODEGEN_PILOT_DIRECTORY
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/shell_kernels")
+    set(VIBEQC_CODEGEN_PILOT_OUTPUTS)
+    foreach(axis x y z)
+      set(output
+          "${VIBEQC_CODEGEN_PILOT_DIRECTORY}/eri_psss_${axis}_gradient.cuh")
+      vibeqc_register_generated_sources(
+        GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_shell_kernels.py"
+        OUTPUTS "${output}"
+        ARGS --shell-class psss --axis "${axis}" --output "${output}"
+        COMMENT "Generating symbolic/CSE psss ${axis}-gradient CUDA pilot")
+      list(APPEND VIBEQC_CODEGEN_PILOT_OUTPUTS "${output}")
+    endforeach()
+
+    set(output
+        "${VIBEQC_CODEGEN_PILOT_DIRECTORY}/eri_dppp_xy_xyz_factored_gradient.cuh")
+    vibeqc_register_generated_sources(
+      GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_shell_kernels.py"
+      OUTPUTS "${output}"
+      ARGS
+        --shell-class dppp --d-component xy --p-components xyz
+        --lowering factored --output "${output}"
+      COMMENT "Generating factored symbolic/CSE dppp xy/xyz CUDA candidate")
+    list(APPEND VIBEQC_CODEGEN_PILOT_OUTPUTS "${output}")
+    add_custom_target(vibeqc_codegen_pilot DEPENDS ${VIBEQC_CODEGEN_PILOT_OUTPUTS})
+  endif()
+endmacro()
+
+===== OVERLAP cmake/VibeQCSourceIdentity.json: PR =====
+diff --git a/cmake/VibeQCSourceIdentity.json b/cmake/VibeQCSourceIdentity.json
+index 8cbdb717..f69d8504 100644
+--- a/cmake/VibeQCSourceIdentity.json
++++ b/cmake/VibeQCSourceIdentity.json
+@@ -82,6 +82,8 @@
+     "tools/xtb/scipy_openblas32_manifest.json",
+     "tools/generate_scf_density_cuda.py",
+     "tools/generate_stationary_force_aot.py",
++    "tools/generate_stationary_cpu_derivative_aot.py",
++    "tools/generate_wb97mv_rsh_cpu_aot.py",
+     "tools/write_stationary_aot_manifest.py"
+   ]
+ }
+
+===== OVERLAP cmake/VibeQCSourceIdentity.json: MASTER =====
+diff --git a/cmake/VibeQCSourceIdentity.json b/cmake/VibeQCSourceIdentity.json
+index 8cbdb717..bd7f3aaa 100644
+--- a/cmake/VibeQCSourceIdentity.json
++++ b/cmake/VibeQCSourceIdentity.json
+@@ -82,6 +82,7 @@
+     "tools/xtb/scipy_openblas32_manifest.json",
+     "tools/generate_scf_density_cuda.py",
+     "tools/generate_stationary_force_aot.py",
++    "tools/generate_stationary_cpu_derivative_aot.py",
+     "tools/write_stationary_aot_manifest.py"
+   ]
+ }
+
+===== CONFLICTED CONTENT cmake/VibeQCSourceIdentity.json =====
+{
+  "schema_version": 1,
+  "recursive_groups": [
+    {
+      "root": "src",
+      "patterns": [
+        "*"
+      ]
+    },
+    {
+      "root": "include",
+      "patterns": [
+        "*"
+      ]
+    },
+    {
+      "root": "python/vibeqc_compiler",
+      "patterns": [
+        "*.py",
+        "*.json"
+      ]
+    },
+    {
+      "root": "python/vibeqc",
+      "patterns": [
+        "*.py"
+      ]
+    },
+    {
+      "root": "tools/vibeqc_mp2",
+      "patterns": [
+        "*.py"
+      ]
+    },
+    {
+      "root": "tools/vibeqc_cc",
+      "patterns": [
+        "*.py"
+      ]
+    },
+    {
+      "root": "cmake/3rdparty/implib",
+      "patterns": [
+        "*"
+      ]
+    }
+  ],
+  "files": [
+    "CMakeLists.txt",
+    "cmake/VibeQCCuda.cmake",
+    "cmake/VibeQCCudaImplib.cmake",
+    "cmake/VibeQCGenerated.cmake",
+    "cmake/VibeQCGeneratedSources.cmake",
+    "cmake/VibeQCSources.cmake",
+    "cmake/VibeQCTests.cmake",
+    "cmake/VibeQCSourceIdentity.cmake",
+    "cmake/3rdparty/implib_manifest.json",
+    "tools/generate_build_identity.py",
+    "tools/generate_cuda_implib.py",
+    "tools/generate_method_parameters.py",
+    "tools/generate_shell_kernels.py",
+    "tools/generate_ecp_kernels.py",
+    "tools/generate_df_kernels.py",
+    "tools/generate_weighted_eri_kernels.py",
+    "tools/generate_one_electron_kernels.py",
+    "tools/generate_grid_kernels.py",
+    "tools/generate_mp2_native.py",
+    "tools/generate_rccsd_native.py",
+    "tools/generate_rccsdt_native.py",
+    "tools/generate_xc_cpu.py",
+    "tools/generate_xc_gradient_cuda.py",
+    "tools/run_codegen.py",
+    "tools/vibeqc_posthf/plan_spec.py",
+    "tools/generate_scf_array_native.py",
+    "tools/generate_cosx_derivative_native.py",
+    "tools/generate_gfn2_pair_native.py",
+    "tools/generate_gfn2_es2_native.py",
+    "tools/generate_gfn2_es3_native.py",
+    "tools/generate_gfn2_scc_free_energy_native.py",
+    "cmake/VibeQCGfn2Runtime.cmake",
+    "tools/xtb/resolve-openblas-wheel.py",
+    "tools/xtb/scipy_openblas32_manifest.json",
+    "tools/generate_scf_density_cuda.py",
+    "tools/generate_stationary_force_aot.py",
+    "tools/generate_stationary_cpu_derivative_aot.py",
+<<<<<<< 0f03dd5993bd7dcc0e58b20afdf6cae57df815df
+    "tools/generate_wb97mv_rsh_cpu_aot.py",
+=======
+>>>>>>> c308ff84dd0fb68a83a027ae02206fe98ac7c7ee
+    "tools/write_stationary_aot_manifest.py"
+  ]
+}
+
+===== OVERLAP cmake/VibeQCSources.cmake: PR =====
+diff --git a/cmake/VibeQCSources.cmake b/cmake/VibeQCSources.cmake
+index 627bd6c3..ccf222bb 100644
+--- a/cmake/VibeQCSources.cmake
++++ b/cmake/VibeQCSources.cmake
+@@ -115,6 +115,7 @@ function(vibeqc_add_integrals_scf_sources target)
+     src/integrals/density_fitting_metric.cpp
+     src/integrals/generated_df_cpu.cpp
+     src/integrals/ecp.cpp
++    src/integrals/stationary_component_contract.cpp
+     src/methods/hf_method.cpp
+     src/molecule/basis.cpp
+     src/scf/density_fitting.cpp
+
+===== OVERLAP cmake/VibeQCSources.cmake: MASTER =====
+diff --git a/cmake/VibeQCSources.cmake b/cmake/VibeQCSources.cmake
+index 627bd6c3..ccf222bb 100644
+--- a/cmake/VibeQCSources.cmake
++++ b/cmake/VibeQCSources.cmake
+@@ -115,6 +115,7 @@ function(vibeqc_add_integrals_scf_sources target)
+     src/integrals/density_fitting_metric.cpp
+     src/integrals/generated_df_cpu.cpp
+     src/integrals/ecp.cpp
++    src/integrals/stationary_component_contract.cpp
+     src/methods/hf_method.cpp
+     src/molecule/basis.cpp
+     src/scf/density_fitting.cpp
+
+===== OVERLAP python/vibeqc/_stationary_cpu.py: PR =====
+diff --git a/python/vibeqc/_stationary_cpu.py b/python/vibeqc/_stationary_cpu.py
+index 12054ff2..4f3c7a01 100644
+--- a/python/vibeqc/_stationary_cpu.py
++++ b/python/vibeqc/_stationary_cpu.py
+@@ -469,7 +469,8 @@ def complete_rks_gradient_diagnostic(
+         compiler = CppCompilerAdapter(Path(os.environ.get("CXX", "c++")))
+     if not isinstance(compiler, CppCompilerAdapter):
+         raise TypeError("the CPU diagnostic requires an explicit C++ compiler adapter")
+-    if any(shell.angular_momentum == 2 for shell in basis.shells):
++    has_d_shell = any(shell.angular_momentum == 2 for shell in basis.shells)
++    if has_d_shell or (execution == "native" and component_execution == "native"):
+         from ._stationary_cpu_components import ComponentPrimitiveExecutor
+         from ._stationary_cpu_streaming import CompiledComponentExecutor
+ 
+@@ -478,7 +479,13 @@ def complete_rks_gradient_diagnostic(
+             if component_execution == "native"
+             else ComponentPrimitiveExecutor
+         )
+-        native = executor(basis, cache, primitive_tile, compiler)
++        native = executor(
++            basis,
++            cache,
++            primitive_tile,
++            compiler,
++            aot_library=state._source._library,
++        )
+         work.update(native.compilation_work)
+         work["component_execution"] = component_execution
+     else:
+@@ -555,7 +562,13 @@ def complete_rks_gradient_diagnostic(
+ 
+     range_native = None
+     if plan.range_exchange_primitives:
+-        range_native = RangeExchangeExecutor(basis, cache, primitive_tile, compiler)
++        range_native = RangeExchangeExecutor(
++            basis,
++            cache,
++            primitive_tile,
++            compiler,
++            aot_library=state._source._library,
++        )
+         try:
+             for range_source in plan.range_exchange_sources:
+                 primitive = plan.range_exchange_primitive(range_source.name)
+@@ -588,6 +601,10 @@ def complete_rks_gradient_diagnostic(
+                         )
+                         np.add.at(components[range_source.name], owners, values)
+         finally:
++            work["range_exchange_packaged_aot_plans"] = range_native.packaged_aot_plans
++            work["range_exchange_runtime_compilations"] = (
++                range_native.runtime_compilations
++            )
+             range_native.close()
+     for a in range(natom):
+         for b in range(a):
+
+===== OVERLAP python/vibeqc/_stationary_cpu.py: MASTER =====
+diff --git a/python/vibeqc/_stationary_cpu.py b/python/vibeqc/_stationary_cpu.py
+index 12054ff2..146ccb14 100644
+--- a/python/vibeqc/_stationary_cpu.py
++++ b/python/vibeqc/_stationary_cpu.py
+@@ -469,7 +469,8 @@ def complete_rks_gradient_diagnostic(
+         compiler = CppCompilerAdapter(Path(os.environ.get("CXX", "c++")))
+     if not isinstance(compiler, CppCompilerAdapter):
+         raise TypeError("the CPU diagnostic requires an explicit C++ compiler adapter")
+-    if any(shell.angular_momentum == 2 for shell in basis.shells):
++    has_d_shell = any(shell.angular_momentum == 2 for shell in basis.shells)
++    if has_d_shell or (execution == "native" and component_execution == "native"):
+         from ._stationary_cpu_components import ComponentPrimitiveExecutor
+         from ._stationary_cpu_streaming import CompiledComponentExecutor
+ 
+@@ -478,7 +479,13 @@ def complete_rks_gradient_diagnostic(
+             if component_execution == "native"
+             else ComponentPrimitiveExecutor
+         )
+-        native = executor(basis, cache, primitive_tile, compiler)
++        native = executor(
++            basis,
++            cache,
++            primitive_tile,
++            compiler,
++            aot_library=state._source._library,
++        )
+         work.update(native.compilation_work)
+         work["component_execution"] = component_execution
+     else:
+
+===== OVERLAP python/vibeqc/_stationary_cpu_components.py: PR =====
+diff --git a/python/vibeqc/_stationary_cpu_components.py b/python/vibeqc/_stationary_cpu_components.py
+index d78c6698..2d3f6e03 100644
+--- a/python/vibeqc/_stationary_cpu_components.py
++++ b/python/vibeqc/_stationary_cpu_components.py
+@@ -8,11 +8,40 @@ from pathlib import Path
+ import numpy as np
+ from vibeqc_compiler.common.cpp_adapter import CppCompilerAdapter
+ from vibeqc_compiler.integral.first_derivative_schedule import (
++    COMPONENT_LABELS,
++    CPU_AOT_SHARDS,
++    REQUESTS_PER_UNIT,
++    cpu_aot_symbol,
+     derivative_binding,
++    derivative_requests,
+     derivative_sources,
+ )
+ 
+ 
++def _configure_dispatch(call: typing.Any) -> typing.Any:
++    call.argtypes = [
++        ct.c_uint,
++        ct.POINTER(ct.c_double),
++        ct.c_size_t,
++        ct.POINTER(ct.c_double),
++    ]
++    call.restype = ct.c_int
++    return call
++
++
++def _packaged_aot_dispatchers(library: typing.Any) -> tuple[typing.Any, ...]:
++    if library is None:
++        return ()
++    dispatchers = []
++    for shard in range(CPU_AOT_SHARDS):
++        try:
++            call = getattr(library, cpu_aot_symbol(shard))
++        except AttributeError:
++            return ()
++        dispatchers.append(_configure_dispatch(call))
++    return tuple(dispatchers)
++
++
+ class ComponentPrimitiveExecutor:
+     """Stream every public component weight; share only compiled scalar kernels."""
+ 
+@@ -22,6 +51,8 @@ class ComponentPrimitiveExecutor:
+         cache: str | Path,
+         primitive_tile: int,
+         compiler: CppCompilerAdapter,
++        *,
++        aot_library: typing.Any = None,
+     ) -> None:
+         from ._stationary_cpu import _compile_primitive_library
+ 
+@@ -53,22 +84,42 @@ class ComponentPrimitiveExecutor:
+         domain = tuple(
+             sorted({c for expansion in self.expansions for c, _ in expansion})
+         )
+-        self.libraries, self.calls = [], {}
+-        sources = derivative_sources(domain)
+-        for requests, source in sources:
+-            library, call = _compile_primitive_library(source, cache, compiler)
+-            self.libraries.append(library)
+-            for kind, request in enumerate(requests):
+-                self.calls[request] = (call, kind)
++        self.libraries, self.dispatchers, self.calls = [], [], {}
++        requests = derivative_requests(domain)
++        packaged = _packaged_aot_dispatchers(aot_library)
++        if packaged:
++            full_requests = derivative_requests(COMPONENT_LABELS)
++            positions = {request: index for index, request in enumerate(full_requests)}
++            self.libraries.append(aot_library)
++            self.dispatchers.extend(packaged)
++            for request in requests:
++                index = positions[request]
++                self.calls[request] = (
++                    packaged[index // REQUESTS_PER_UNIT],
++                    index % REQUESTS_PER_UNIT,
++                )
++            source_bytes = largest_source = 0
++            runtime_compilations = 0
++            translation_units = CPU_AOT_SHARDS
++        else:
++            sources = derivative_sources(domain)
++            for selected, source in sources:
++                library, call = _compile_primitive_library(source, cache, compiler)
++                self.libraries.append(library)
++                self.dispatchers.append(call)
++                for kind, request in enumerate(selected):
++                    self.calls[request] = (call, kind)
++            source_bytes = sum(len(source.encode("utf-8")) for _, source in sources)
++            largest_source = max(len(source.encode("utf-8")) for _, source in sources)
++            runtime_compilations = len(sources)
++            translation_units = len(sources)
+         self.compilation_work = {
+             "primitive_compiled_kernels": len(self.calls),
+-            "primitive_translation_units": len(sources),
+-            "primitive_generated_source_bytes": sum(
+-                len(s.encode("utf-8")) for _, s in sources
+-            ),
+-            "primitive_largest_source_bytes": max(
+-                len(s.encode("utf-8")) for _, s in sources
+-            ),
++            "primitive_translation_units": translation_units,
++            "primitive_generated_source_bytes": source_bytes,
++            "primitive_largest_source_bytes": largest_source,
++            "primitive_runtime_compilations": runtime_compilations,
++            "primitive_packaged_aot": int(bool(packaged)),
+         }
+         self.buffer = np.zeros((primitive_tile, 17))
+         self.records = 0
+
+===== OVERLAP python/vibeqc/_stationary_cpu_components.py: MASTER =====
+diff --git a/python/vibeqc/_stationary_cpu_components.py b/python/vibeqc/_stationary_cpu_components.py
+index d78c6698..2d3f6e03 100644
+--- a/python/vibeqc/_stationary_cpu_components.py
++++ b/python/vibeqc/_stationary_cpu_components.py
+@@ -8,11 +8,40 @@ from pathlib import Path
+ import numpy as np
+ from vibeqc_compiler.common.cpp_adapter import CppCompilerAdapter
+ from vibeqc_compiler.integral.first_derivative_schedule import (
++    COMPONENT_LABELS,
++    CPU_AOT_SHARDS,
++    REQUESTS_PER_UNIT,
++    cpu_aot_symbol,
+     derivative_binding,
++    derivative_requests,
+     derivative_sources,
+ )
+ 
+ 
++def _configure_dispatch(call: typing.Any) -> typing.Any:
++    call.argtypes = [
++        ct.c_uint,
++        ct.POINTER(ct.c_double),
++        ct.c_size_t,
++        ct.POINTER(ct.c_double),
++    ]
++    call.restype = ct.c_int
++    return call
++
++
++def _packaged_aot_dispatchers(library: typing.Any) -> tuple[typing.Any, ...]:
++    if library is None:
++        return ()
++    dispatchers = []
++    for shard in range(CPU_AOT_SHARDS):
++        try:
++            call = getattr(library, cpu_aot_symbol(shard))
++        except AttributeError:
++            return ()
++        dispatchers.append(_configure_dispatch(call))
++    return tuple(dispatchers)
++
++
+ class ComponentPrimitiveExecutor:
+     """Stream every public component weight; share only compiled scalar kernels."""
+ 
+@@ -22,6 +51,8 @@ class ComponentPrimitiveExecutor:
+         cache: str | Path,
+         primitive_tile: int,
+         compiler: CppCompilerAdapter,
++        *,
++        aot_library: typing.Any = None,
+     ) -> None:
+         from ._stationary_cpu import _compile_primitive_library
+ 
+@@ -53,22 +84,42 @@ class ComponentPrimitiveExecutor:
+         domain = tuple(
+             sorted({c for expansion in self.expansions for c, _ in expansion})
+         )
+-        self.libraries, self.calls = [], {}
+-        sources = derivative_sources(domain)
+-        for requests, source in sources:
+-            library, call = _compile_primitive_library(source, cache, compiler)
+-            self.libraries.append(library)
+-            for kind, request in enumerate(requests):
+-                self.calls[request] = (call, kind)
++        self.libraries, self.dispatchers, self.calls = [], [], {}
++        requests = derivative_requests(domain)
++        packaged = _packaged_aot_dispatchers(aot_library)
++        if packaged:
++            full_requests = derivative_requests(COMPONENT_LABELS)
++            positions = {request: index for index, request in enumerate(full_requests)}
++            self.libraries.append(aot_library)
++            self.dispatchers.extend(packaged)
++            for request in requests:
++                index = positions[request]
++                self.calls[request] = (
++                    packaged[index // REQUESTS_PER_UNIT],
++                    index % REQUESTS_PER_UNIT,
++                )
++            source_bytes = largest_source = 0
++            runtime_compilations = 0
++            translation_units = CPU_AOT_SHARDS
++        else:
++            sources = derivative_sources(domain)
++            for selected, source in sources:
++                library, call = _compile_primitive_library(source, cache, compiler)
++                self.libraries.append(library)
++                self.dispatchers.append(call)
++                for kind, request in enumerate(selected):
++                    self.calls[request] = (call, kind)
++            source_bytes = sum(len(source.encode("utf-8")) for _, source in sources)
++            largest_source = max(len(source.encode("utf-8")) for _, source in sources)
++            runtime_compilations = len(sources)
++            translation_units = len(sources)
+         self.compilation_work = {
+             "primitive_compiled_kernels": len(self.calls),
+-            "primitive_translation_units": len(sources),
+-            "primitive_generated_source_bytes": sum(
+-                len(s.encode("utf-8")) for _, s in sources
+-            ),
+-            "primitive_largest_source_bytes": max(
+-                len(s.encode("utf-8")) for _, s in sources
+-            ),
++            "primitive_translation_units": translation_units,
++            "primitive_generated_source_bytes": source_bytes,
++            "primitive_largest_source_bytes": largest_source,
++            "primitive_runtime_compilations": runtime_compilations,
++            "primitive_packaged_aot": int(bool(packaged)),
+         }
+         self.buffer = np.zeros((primitive_tile, 17))
+         self.records = 0
+
+===== OVERLAP python/vibeqc/_stationary_cpu_streaming.py: PR =====
+diff --git a/python/vibeqc/_stationary_cpu_streaming.py b/python/vibeqc/_stationary_cpu_streaming.py
+index f4fe6ffd..296c84e1 100644
+--- a/python/vibeqc/_stationary_cpu_streaming.py
++++ b/python/vibeqc/_stationary_cpu_streaming.py
+@@ -31,12 +31,16 @@ class CompiledComponentExecutor(ComponentPrimitiveExecutor):
+         cache: str | Path,
+         primitive_tile: int,
+         compiler: CppCompilerAdapter,
++        *,
++        aot_library: typing.Any = None,
+     ) -> None:
+         from ._stationary_cpu import _publish_source
+ 
+         if type(primitive_tile) is not int or not 1 <= primitive_tile <= 4096:
+             raise ValueError("primitive tile must be an integer in [1,4096]")
+-        super().__init__(basis, cache, primitive_tile, compiler)
++        super().__init__(
++            basis, cache, primitive_tile, compiler, aot_library=aot_library
++        )
+         labels = np.full((len(self.aos), 3), -1, dtype=np.int64)
+         for i, expansion in enumerate(self.expansions):
+             for j, (label, _) in enumerate(expansion):
+@@ -45,29 +49,43 @@ class CompiledComponentExecutor(ComponentPrimitiveExecutor):
+             labels.shape
+         )
+         domain = tuple(sorted({c for terms in self.expansions for c, _ in terms}))
+-        bindings = np.asarray(derivative_dispatch_table(domain), dtype=np.int64)
++        binding_domain = (
++            COMPONENT_LABELS
++            if self.compilation_work["primitive_packaged_aot"]
++            else domain
++        )
++        bindings = np.asarray(derivative_dispatch_table(binding_domain), dtype=np.int64)
+         self.bindings = np.frombuffer(bindings.tobytes(), dtype=np.int64).reshape(
+             bindings.shape
+         )
+-        self.dispatch = (Dispatch * len(self.libraries))(
+-            *(
+-                ct.cast(lib.vibeqc_first_derivative_cpu, Dispatch)
+-                for lib in self.libraries
+-            )
++        self.dispatch = (Dispatch * len(self.dispatchers))(
++            *(ct.cast(call, Dispatch) for call in self.dispatchers)
+         )
+-        header = asset_path("src/integrals/first_derivative_component_runtime.hpp")
+-        source = '#include "integrals/first_derivative_component_runtime.hpp"\n'
+-        path = Path(cache) / (canonical_hash(source) + ".cpp")
+-        _publish_source(path, source)
+-        artifact = compile_runtime(
+-            compiler,
+-            cache,
+-            path,
+-            headers=(header,),
+-            options=("-ffp-contract=off", f"-I{header.parents[1]}"),
+-        )
+-        self.runtime = ct.CDLL(str(artifact.library))
+-        self.contract = self.runtime.vibeqc_component_contract_cpu
++        contract = None
++        if aot_library is not None:
++            try:
++                contract = aot_library.vibeqc_component_contract_cpu
++            except AttributeError:
++                contract = None
++        if contract is None:
++            header = asset_path("src/integrals/first_derivative_component_runtime.hpp")
++            source = '#include "integrals/first_derivative_component_runtime.hpp"\n'
++            path = Path(cache) / (canonical_hash(source) + ".cpp")
++            _publish_source(path, source)
++            artifact = compile_runtime(
++                compiler,
++                cache,
++                path,
++                headers=(header,),
++                options=("-ffp-contract=off", f"-I{header.parents[1]}"),
++            )
++            self.runtime = ct.CDLL(str(artifact.library))
++            contract = self.runtime.vibeqc_component_contract_cpu
++            self.compilation_work["component_contract_runtime_compilations"] = 1
++        else:
++            self.runtime = aot_library
++            self.compilation_work["component_contract_runtime_compilations"] = 0
++        self.contract = contract
+         self.contract.argtypes = [
+             DoublePointer,
+             ct.c_size_t,
+@@ -103,7 +121,7 @@ class CompiledComponentExecutor(ComponentPrimitiveExecutor):
+             len(self.bindings),
+             len(COMPONENT_LABELS),
+             self.dispatch,
+-            len(self.libraries),
++            len(self.dispatchers),
+         )
+         self.compilation_work["component_dispatch_bytes"] = (
+             self.labels.nbytes + self.bindings.nbytes + ct.sizeof(self.dispatch)
+
+===== OVERLAP python/vibeqc/_stationary_cpu_streaming.py: MASTER =====
+diff --git a/python/vibeqc/_stationary_cpu_streaming.py b/python/vibeqc/_stationary_cpu_streaming.py
+index f4fe6ffd..296c84e1 100644
+--- a/python/vibeqc/_stationary_cpu_streaming.py
++++ b/python/vibeqc/_stationary_cpu_streaming.py
+@@ -31,12 +31,16 @@ class CompiledComponentExecutor(ComponentPrimitiveExecutor):
+         cache: str | Path,
+         primitive_tile: int,
+         compiler: CppCompilerAdapter,
++        *,
++        aot_library: typing.Any = None,
+     ) -> None:
+         from ._stationary_cpu import _publish_source
+ 
+         if type(primitive_tile) is not int or not 1 <= primitive_tile <= 4096:
+             raise ValueError("primitive tile must be an integer in [1,4096]")
+-        super().__init__(basis, cache, primitive_tile, compiler)
++        super().__init__(
++            basis, cache, primitive_tile, compiler, aot_library=aot_library
++        )
+         labels = np.full((len(self.aos), 3), -1, dtype=np.int64)
+         for i, expansion in enumerate(self.expansions):
+             for j, (label, _) in enumerate(expansion):
+@@ -45,29 +49,43 @@ class CompiledComponentExecutor(ComponentPrimitiveExecutor):
+             labels.shape
+         )
+         domain = tuple(sorted({c for terms in self.expansions for c, _ in terms}))
+-        bindings = np.asarray(derivative_dispatch_table(domain), dtype=np.int64)
++        binding_domain = (
++            COMPONENT_LABELS
++            if self.compilation_work["primitive_packaged_aot"]
++            else domain
++        )
++        bindings = np.asarray(derivative_dispatch_table(binding_domain), dtype=np.int64)
+         self.bindings = np.frombuffer(bindings.tobytes(), dtype=np.int64).reshape(
+             bindings.shape
+         )
+-        self.dispatch = (Dispatch * len(self.libraries))(
+-            *(
+-                ct.cast(lib.vibeqc_first_derivative_cpu, Dispatch)
+-                for lib in self.libraries
+-            )
++        self.dispatch = (Dispatch * len(self.dispatchers))(
++            *(ct.cast(call, Dispatch) for call in self.dispatchers)
+         )
+-        header = asset_path("src/integrals/first_derivative_component_runtime.hpp")
+-        source = '#include "integrals/first_derivative_component_runtime.hpp"\n'
+-        path = Path(cache) / (canonical_hash(source) + ".cpp")
+-        _publish_source(path, source)
+-        artifact = compile_runtime(
+-            compiler,
+-            cache,
+-            path,
+-            headers=(header,),
+-            options=("-ffp-contract=off", f"-I{header.parents[1]}"),
+-        )
+-        self.runtime = ct.CDLL(str(artifact.library))
+-        self.contract = self.runtime.vibeqc_component_contract_cpu
++        contract = None
++        if aot_library is not None:
++            try:
++                contract = aot_library.vibeqc_component_contract_cpu
++            except AttributeError:
++                contract = None
++        if contract is None:
++            header = asset_path("src/integrals/first_derivative_component_runtime.hpp")
++            source = '#include "integrals/first_derivative_component_runtime.hpp"\n'
++            path = Path(cache) / (canonical_hash(source) + ".cpp")
++            _publish_source(path, source)
++            artifact = compile_runtime(
++                compiler,
++                cache,
++                path,
++                headers=(header,),
++                options=("-ffp-contract=off", f"-I{header.parents[1]}"),
++            )
++            self.runtime = ct.CDLL(str(artifact.library))
++            contract = self.runtime.vibeqc_component_contract_cpu
++            self.compilation_work["component_contract_runtime_compilations"] = 1
++        else:
++            self.runtime = aot_library
++            self.compilation_work["component_contract_runtime_compilations"] = 0
++        self.contract = contract
+         self.contract.argtypes = [
+             DoublePointer,
+             ct.c_size_t,
+@@ -103,7 +121,7 @@ class CompiledComponentExecutor(ComponentPrimitiveExecutor):
+             len(self.bindings),
+             len(COMPONENT_LABELS),
+             self.dispatch,
+-            len(self.libraries),
++            len(self.dispatchers),
+         )
+         self.compilation_work["component_dispatch_bytes"] = (
+             self.labels.nbytes + self.bindings.nbytes + ct.sizeof(self.dispatch)
+
+===== OVERLAP python/vibeqc_compiler/integral/first_derivative_native.py: PR =====
+diff --git a/python/vibeqc_compiler/integral/first_derivative_native.py b/python/vibeqc_compiler/integral/first_derivative_native.py
+index b7b3f85b..15d49853 100644
+--- a/python/vibeqc_compiler/integral/first_derivative_native.py
++++ b/python/vibeqc_compiler/integral/first_derivative_native.py
+@@ -43,8 +43,10 @@ def _scalar_function(
+     )
+ 
+ 
+-@lru_cache(maxsize=4)
+-def emit_first_derivative_cpu(requests: typing.Any) -> typing.Any:
++@lru_cache(maxsize=64)
++def emit_first_derivative_cpu(
++    requests: typing.Any, *, symbol: str = "vibeqc_first_derivative_cpu"
++) -> typing.Any:
+     """Emit ordered ``(operator, components)`` kernels and a checked dispatcher.
+ 
+     S/T/V use ordinary unnormalized primitives; attraction has unit positive
+@@ -52,10 +54,10 @@ def emit_first_derivative_cpu(requests: typing.Any) -> typing.Any:
+     repulsion uses e[0:2] as charges. ERIs use full-range Coulomb and unit graph
+     weights. The runtime record weight is the sole external multiplicity.
+     """
+-    return _emit_first_derivative(requests, backend="cpu")
++    return _emit_first_derivative(requests, backend="cpu", symbol=symbol)
+ 
+ 
+-@lru_cache(maxsize=4)
++@lru_cache(maxsize=64)
+ def emit_first_derivative_cuda(
+     requests: typing.Any, *, symbol: str = "first_derivative"
+ ) -> typing.Any:
+@@ -73,17 +75,23 @@ def _emit_first_derivative(
+     requests = tuple(requests)
+     if not requests or len(requests) != len(set(requests)):
+         raise ValueError("first derivative kernels require unique nonempty requests")
+-    if backend == "cuda" and (
++    if (
+         type(symbol) is not str
+         or not symbol
+         or not symbol.isascii()
+         or not (symbol[0].isalpha() or symbol[0] == "_")
+         or any(not (character.isalnum() or character == "_") for character in symbol)
+     ):
+-        raise ValueError("CUDA first derivative dispatcher requires a C identifier")
++        raise ValueError("first derivative dispatcher requires a C identifier")
+     qualifier = "static" if backend == "cpu" else "__device__ __noinline__"
+-    primitive_prefix = "" if symbol == "first_derivative" else f"{symbol}_"
+-    parts = [
++    default_symbol = (
++        "vibeqc_first_derivative_cpu" if backend == "cpu" else "first_derivative"
++    )
++    primitive_prefix = "" if symbol == default_symbol else f"{symbol}_"
++    parts = []
++    if backend == "cpu" and symbol != default_symbol:
++        parts.append('#include "vibeqc/vibeqc.h"')
++    parts += [
+         (
+             '#include "integrals/first_derivative_runtime.hpp"'
+             if backend == "cpu"
+@@ -179,13 +187,18 @@ def _emit_first_derivative(
+             "}",
+         ]
+         return "\n".join(parts) + "\n"
++    api = "VIBEQC_API " if symbol != default_symbol else ""
+     parts += [
+-        'extern "C" int vibeqc_first_derivative_cpu(unsigned kind, const double* records,',
++        f'extern "C" {api}int {symbol}(unsigned kind, const double* records,',
+         "    std::size_t count, double* output) {",
+         "  switch (kind) {",
+     ]
+     parts += [
+-        f"case {i}: return vibeqc::integrals::first_derivative_records(records, count, output, primitive_{i});"
++        (
++            "case "
++            f"{i}: return vibeqc::integrals::first_derivative_records("
++            f"records, count, output, {primitive_prefix}primitive_{i});"
++        )
+         for i in range(len(requests))
+     ]
+     parts += ["default: return 1;", "}", "}"]
+
+===== OVERLAP python/vibeqc_compiler/integral/first_derivative_native.py: MASTER =====
+diff --git a/python/vibeqc_compiler/integral/first_derivative_native.py b/python/vibeqc_compiler/integral/first_derivative_native.py
+index b7b3f85b..15d49853 100644
+--- a/python/vibeqc_compiler/integral/first_derivative_native.py
++++ b/python/vibeqc_compiler/integral/first_derivative_native.py
+@@ -43,8 +43,10 @@ def _scalar_function(
+     )
+ 
+ 
+-@lru_cache(maxsize=4)
+-def emit_first_derivative_cpu(requests: typing.Any) -> typing.Any:
++@lru_cache(maxsize=64)
++def emit_first_derivative_cpu(
++    requests: typing.Any, *, symbol: str = "vibeqc_first_derivative_cpu"
++) -> typing.Any:
+     """Emit ordered ``(operator, components)`` kernels and a checked dispatcher.
+ 
+     S/T/V use ordinary unnormalized primitives; attraction has unit positive
+@@ -52,10 +54,10 @@ def emit_first_derivative_cpu(requests: typing.Any) -> typing.Any:
+     repulsion uses e[0:2] as charges. ERIs use full-range Coulomb and unit graph
+     weights. The runtime record weight is the sole external multiplicity.
+     """
+-    return _emit_first_derivative(requests, backend="cpu")
++    return _emit_first_derivative(requests, backend="cpu", symbol=symbol)
+ 
+ 
+-@lru_cache(maxsize=4)
++@lru_cache(maxsize=64)
+ def emit_first_derivative_cuda(
+     requests: typing.Any, *, symbol: str = "first_derivative"
+ ) -> typing.Any:
+@@ -73,17 +75,23 @@ def _emit_first_derivative(
+     requests = tuple(requests)
+     if not requests or len(requests) != len(set(requests)):
+         raise ValueError("first derivative kernels require unique nonempty requests")
+-    if backend == "cuda" and (
++    if (
+         type(symbol) is not str
+         or not symbol
+         or not symbol.isascii()
+         or not (symbol[0].isalpha() or symbol[0] == "_")
+         or any(not (character.isalnum() or character == "_") for character in symbol)
+     ):
+-        raise ValueError("CUDA first derivative dispatcher requires a C identifier")
++        raise ValueError("first derivative dispatcher requires a C identifier")
+     qualifier = "static" if backend == "cpu" else "__device__ __noinline__"
+-    primitive_prefix = "" if symbol == "first_derivative" else f"{symbol}_"
+-    parts = [
++    default_symbol = (
++        "vibeqc_first_derivative_cpu" if backend == "cpu" else "first_derivative"
++    )
++    primitive_prefix = "" if symbol == default_symbol else f"{symbol}_"
++    parts = []
++    if backend == "cpu" and symbol != default_symbol:
++        parts.append('#include "vibeqc/vibeqc.h"')
++    parts += [
+         (
+             '#include "integrals/first_derivative_runtime.hpp"'
+             if backend == "cpu"
+@@ -179,13 +187,18 @@ def _emit_first_derivative(
+             "}",
+         ]
+         return "\n".join(parts) + "\n"
++    api = "VIBEQC_API " if symbol != default_symbol else ""
+     parts += [
+-        'extern "C" int vibeqc_first_derivative_cpu(unsigned kind, const double* records,',
++        f'extern "C" {api}int {symbol}(unsigned kind, const double* records,',
+         "    std::size_t count, double* output) {",
+         "  switch (kind) {",
+     ]
+     parts += [
+-        f"case {i}: return vibeqc::integrals::first_derivative_records(records, count, output, primitive_{i});"
++        (
++            "case "
++            f"{i}: return vibeqc::integrals::first_derivative_records("
++            f"records, count, output, {primitive_prefix}primitive_{i});"
++        )
+         for i in range(len(requests))
+     ]
+     parts += ["default: return 1;", "}", "}"]
+
+===== OVERLAP python/vibeqc_compiler/integral/first_derivative_schedule.py: PR =====
+diff --git a/python/vibeqc_compiler/integral/first_derivative_schedule.py b/python/vibeqc_compiler/integral/first_derivative_schedule.py
+index a63a194c..fee280d5 100644
+--- a/python/vibeqc_compiler/integral/first_derivative_schedule.py
++++ b/python/vibeqc_compiler/integral/first_derivative_schedule.py
+@@ -26,6 +26,9 @@ COMPONENT_LABELS = ("", "x", "xx", "xy", "xz", "y", "yy", "yz", "z", "zz")
+ COMPONENT_OPERATORS = ("overlap", "kinetic", "nuclear_attraction", "four_center_eri")
+ DISPATCH_ROWS = 3 * len(COMPONENT_LABELS) ** 2 + len(COMPONENT_LABELS) ** 4
+ DISPATCH_WIDTH = 9
++CPU_AOT_COMPONENTS = COMPONENT_LABELS
++CPU_AOT_SHARDS = 46
++CPU_AOT_SYMBOL_PREFIX = "vibeqc_first_derivative_cpu_shard_"
+ 
+ 
+ @dataclass(frozen=True)
+@@ -116,6 +119,33 @@ def derivative_sources(
+     return tuple(units)
+ 
+ 
++def cpu_aot_symbol(shard: int) -> str:
++    if type(shard) is not int or not 0 <= shard < CPU_AOT_SHARDS:
++        raise ValueError("CPU derivative AOT shard is out of range")
++    return f"{CPU_AOT_SYMBOL_PREFIX}{shard}"
++
++
++@lru_cache(maxsize=1)
++def derivative_cpu_aot_sources() -> tuple[
++    tuple[tuple[DerivativeRequest, ...], str], ...
++]:
++    """Emit the full s/p/d CPU inventory with link-safe exported dispatchers."""
++
++    requests = derivative_requests(CPU_AOT_COMPONENTS)
++    units, total = [], 0
++    for shard, begin in enumerate(range(0, len(requests), REQUESTS_PER_UNIT)):
++        selected = requests[begin : begin + REQUESTS_PER_UNIT]
++        source = emit_first_derivative_cpu(selected, symbol=cpu_aot_symbol(shard))
++        size = len(source.encode("utf-8"))
++        total += size
++        if size > MAX_UNIT_BYTES or total > MAX_PROGRAM_BYTES:
++            raise ValueError("first derivative generated source budget exceeded")
++        units.append((selected, source))
++    if len(units) != CPU_AOT_SHARDS:
++        raise RuntimeError("stationary CPU derivative AOT shard contract drift")
++    return tuple(units)
++
++
+ @lru_cache(maxsize=4)
+ def derivative_cuda_sources(
+     domain: tuple[str, ...],
+
+===== OVERLAP python/vibeqc_compiler/integral/first_derivative_schedule.py: MASTER =====
+diff --git a/python/vibeqc_compiler/integral/first_derivative_schedule.py b/python/vibeqc_compiler/integral/first_derivative_schedule.py
+index a63a194c..fee280d5 100644
+--- a/python/vibeqc_compiler/integral/first_derivative_schedule.py
++++ b/python/vibeqc_compiler/integral/first_derivative_schedule.py
+@@ -26,6 +26,9 @@ COMPONENT_LABELS = ("", "x", "xx", "xy", "xz", "y", "yy", "yz", "z", "zz")
+ COMPONENT_OPERATORS = ("overlap", "kinetic", "nuclear_attraction", "four_center_eri")
+ DISPATCH_ROWS = 3 * len(COMPONENT_LABELS) ** 2 + len(COMPONENT_LABELS) ** 4
+ DISPATCH_WIDTH = 9
++CPU_AOT_COMPONENTS = COMPONENT_LABELS
++CPU_AOT_SHARDS = 46
++CPU_AOT_SYMBOL_PREFIX = "vibeqc_first_derivative_cpu_shard_"
+ 
+ 
+ @dataclass(frozen=True)
+@@ -116,6 +119,33 @@ def derivative_sources(
+     return tuple(units)
+ 
+ 
++def cpu_aot_symbol(shard: int) -> str:
++    if type(shard) is not int or not 0 <= shard < CPU_AOT_SHARDS:
++        raise ValueError("CPU derivative AOT shard is out of range")
++    return f"{CPU_AOT_SYMBOL_PREFIX}{shard}"
++
++
++@lru_cache(maxsize=1)
++def derivative_cpu_aot_sources() -> tuple[
++    tuple[tuple[DerivativeRequest, ...], str], ...
++]:
++    """Emit the full s/p/d CPU inventory with link-safe exported dispatchers."""
++
++    requests = derivative_requests(CPU_AOT_COMPONENTS)
++    units, total = [], 0
++    for shard, begin in enumerate(range(0, len(requests), REQUESTS_PER_UNIT)):
++        selected = requests[begin : begin + REQUESTS_PER_UNIT]
++        source = emit_first_derivative_cpu(selected, symbol=cpu_aot_symbol(shard))
++        size = len(source.encode("utf-8"))
++        total += size
++        if size > MAX_UNIT_BYTES or total > MAX_PROGRAM_BYTES:
++            raise ValueError("first derivative generated source budget exceeded")
++        units.append((selected, source))
++    if len(units) != CPU_AOT_SHARDS:
++        raise RuntimeError("stationary CPU derivative AOT shard contract drift")
++    return tuple(units)
++
++
+ @lru_cache(maxsize=4)
+ def derivative_cuda_sources(
+     domain: tuple[str, ...],
+
+===== OVERLAP src/integrals/first_derivative_component_runtime.hpp: PR =====
+diff --git a/src/integrals/first_derivative_component_runtime.hpp b/src/integrals/first_derivative_component_runtime.hpp
+index e3792630..e9da3490 100644
+--- a/src/integrals/first_derivative_component_runtime.hpp
++++ b/src/integrals/first_derivative_component_runtime.hpp
+@@ -19,7 +19,11 @@ inline bool component_index(double value, std::size_t limit, std::size_t& out) {
+ }
+ }  // namespace vibeqc::integrals
+ 
+-extern "C" int vibeqc_component_contract_cpu(
++#ifndef VIBEQC_COMPONENT_RUNTIME_API
++#define VIBEQC_COMPONENT_RUNTIME_API
++#endif
++
++extern "C" VIBEQC_COMPONENT_RUNTIME_API int vibeqc_component_contract_cpu(
+     const double* centers, std::size_t atoms, const double* primitives, std::size_t nprimitive,
+     const double* aos, std::size_t nao, const std::int64_t* labels, const std::int64_t* bindings,
+     std::size_t binding_rows, std::size_t label_count,
+
+===== OVERLAP src/integrals/first_derivative_component_runtime.hpp: MASTER =====
+diff --git a/src/integrals/first_derivative_component_runtime.hpp b/src/integrals/first_derivative_component_runtime.hpp
+index e3792630..e9da3490 100644
+--- a/src/integrals/first_derivative_component_runtime.hpp
++++ b/src/integrals/first_derivative_component_runtime.hpp
+@@ -19,7 +19,11 @@ inline bool component_index(double value, std::size_t limit, std::size_t& out) {
+ }
+ }  // namespace vibeqc::integrals
+ 
+-extern "C" int vibeqc_component_contract_cpu(
++#ifndef VIBEQC_COMPONENT_RUNTIME_API
++#define VIBEQC_COMPONENT_RUNTIME_API
++#endif
++
++extern "C" VIBEQC_COMPONENT_RUNTIME_API int vibeqc_component_contract_cpu(
+     const double* centers, std::size_t atoms, const double* primitives, std::size_t nprimitive,
+     const double* aos, std::size_t nao, const std::int64_t* labels, const std::int64_t* bindings,
+     std::size_t binding_rows, std::size_t label_count,
+
+===== OVERLAP src/integrals/stationary_component_contract.cpp: PR =====
+diff --git a/src/integrals/stationary_component_contract.cpp b/src/integrals/stationary_component_contract.cpp
+new file mode 100644
+index 00000000..aec5871d
+--- /dev/null
++++ b/src/integrals/stationary_component_contract.cpp
+@@ -0,0 +1,4 @@
++#include "vibeqc/vibeqc.h"
++
++#define VIBEQC_COMPONENT_RUNTIME_API VIBEQC_API
++#include "integrals/first_derivative_component_runtime.hpp"
+
+===== OVERLAP src/integrals/stationary_component_contract.cpp: MASTER =====
+diff --git a/src/integrals/stationary_component_contract.cpp b/src/integrals/stationary_component_contract.cpp
+new file mode 100644
+index 00000000..aec5871d
+--- /dev/null
++++ b/src/integrals/stationary_component_contract.cpp
+@@ -0,0 +1,4 @@
++#include "vibeqc/vibeqc.h"
++
++#define VIBEQC_COMPONENT_RUNTIME_API VIBEQC_API
++#include "integrals/first_derivative_component_runtime.hpp"
+
+===== OVERLAP tests/python/test_ecp_public_cpu.py: PR =====
+diff --git a/tests/python/test_ecp_public_cpu.py b/tests/python/test_ecp_public_cpu.py
+index 6d927325..0da40439 100644
+--- a/tests/python/test_ecp_public_cpu.py
++++ b/tests/python/test_ecp_public_cpu.py
+@@ -148,6 +148,7 @@ def test_public_ecp_budgeted_ragged_replay_and_failure_recovery(
+     representation: typing.Any,
+     record_property: typing.Any,
+     d_shell: bool = False,
++    component_execution: str = "native",
+ ) -> None:
+     spin = int(method.endswith("uks"))
+     atoms, record, mol = fixture(
+@@ -219,6 +220,22 @@ def test_public_ecp_budgeted_ragged_replay_and_failure_recovery(
+         assert [item["index"] for item in work] == [0, 1]
+         assert work[0]["work"]["ecp_quadrature_pair_samples"] > 0
+         assert work[1]["work"]["ecp_quadrature_pair_samples"] == 0
++        for index, item in enumerate(work):
++            generated = item["work"]
++            if component_execution == "python" and index == 1:
++                # The s-only fragment deliberately uses the legacy primitive baseline.
++                assert "component_execution" not in generated
++                assert "primitive_packaged_aot" not in generated
++                assert "component_contract_runtime_compilations" not in generated
++                continue
++            assert generated["component_execution"] == component_execution
++            assert generated["primitive_packaged_aot"] == 1
++            assert generated["primitive_runtime_compilations"] == 0
++            if component_execution == "native":
++                assert generated["component_contract_runtime_compilations"] == 0
++            else:
++                assert component_execution == "python"
++                assert "component_contract_runtime_compilations" not in generated
+         if d_shell:
+             schedule = work[0]["work"]
+             assert schedule["primitive_compiled_kernels"] == 362
+@@ -311,20 +328,23 @@ def check_spd_arbitrary_ordered_weights_against_libcint_energy_differences(
+     atoms, record, mol = fixture(representation=representation, d_shell=True)
+     direction = np.array([[0.17, -0.11, 0.29], [-0.23, 0.31, -0.07]])
+     with NativeAO(atoms, basis=record, representation=representation) as basis:
++        aot_library = _native.load_library()
++        cache = Path(os.environ.get("VIBEQC_STATIONARY_CACHE", ".cache/stationary-cpu"))
++        compiler = CppCompilerAdapter(Path(os.environ.get("CXX", "c++")))
+         executor = ComponentPrimitiveExecutor(
+             basis,
+-            Path(os.environ.get("VIBEQC_STATIONARY_CACHE", ".cache/stationary-cpu")),
++            cache,
+             2,
+-            CppCompilerAdapter(Path(os.environ.get("CXX", "c++"))),
++            compiler,
++            aot_library=aot_library,
+         )
+         candidates = [
+             CompiledComponentExecutor(
+                 basis,
+-                Path(
+-                    os.environ.get("VIBEQC_STATIONARY_CACHE", ".cache/stationary-cpu")
+-                ),
++                cache,
+                 tile,
+-                CppCompilerAdapter(Path(os.environ.get("CXX", "c++"))),
++                compiler,
++                aot_library=aot_library,
+             )
+             for tile in (1, 2, 128)
+         ]
+@@ -463,6 +483,7 @@ def check_spd_paired_endpoint(
+                 representation,
+                 measurements.__setitem__,
+                 d_shell=True,
++                component_execution=strategy,
+             )
+         record_property(strategy, measurements)
+         results[strategy] = (measurements, gradients)
+
+===== OVERLAP tests/python/test_ecp_public_cpu.py: MASTER =====
+diff --git a/tests/python/test_ecp_public_cpu.py b/tests/python/test_ecp_public_cpu.py
+index 6d927325..0da40439 100644
+--- a/tests/python/test_ecp_public_cpu.py
++++ b/tests/python/test_ecp_public_cpu.py
+@@ -148,6 +148,7 @@ def test_public_ecp_budgeted_ragged_replay_and_failure_recovery(
+     representation: typing.Any,
+     record_property: typing.Any,
+     d_shell: bool = False,
++    component_execution: str = "native",
+ ) -> None:
+     spin = int(method.endswith("uks"))
+     atoms, record, mol = fixture(
+@@ -219,6 +220,22 @@ def test_public_ecp_budgeted_ragged_replay_and_failure_recovery(
+         assert [item["index"] for item in work] == [0, 1]
+         assert work[0]["work"]["ecp_quadrature_pair_samples"] > 0
+         assert work[1]["work"]["ecp_quadrature_pair_samples"] == 0
++        for index, item in enumerate(work):
++            generated = item["work"]
++            if component_execution == "python" and index == 1:
++                # The s-only fragment deliberately uses the legacy primitive baseline.
++                assert "component_execution" not in generated
++                assert "primitive_packaged_aot" not in generated
++                assert "component_contract_runtime_compilations" not in generated
++                continue
++            assert generated["component_execution"] == component_execution
++            assert generated["primitive_packaged_aot"] == 1
++            assert generated["primitive_runtime_compilations"] == 0
++            if component_execution == "native":
++                assert generated["component_contract_runtime_compilations"] == 0
++            else:
++                assert component_execution == "python"
++                assert "component_contract_runtime_compilations" not in generated
+         if d_shell:
+             schedule = work[0]["work"]
+             assert schedule["primitive_compiled_kernels"] == 362
+@@ -311,20 +328,23 @@ def check_spd_arbitrary_ordered_weights_against_libcint_energy_differences(
+     atoms, record, mol = fixture(representation=representation, d_shell=True)
+     direction = np.array([[0.17, -0.11, 0.29], [-0.23, 0.31, -0.07]])
+     with NativeAO(atoms, basis=record, representation=representation) as basis:
++        aot_library = _native.load_library()
++        cache = Path(os.environ.get("VIBEQC_STATIONARY_CACHE", ".cache/stationary-cpu"))
++        compiler = CppCompilerAdapter(Path(os.environ.get("CXX", "c++")))
+         executor = ComponentPrimitiveExecutor(
+             basis,
+-            Path(os.environ.get("VIBEQC_STATIONARY_CACHE", ".cache/stationary-cpu")),
++            cache,
+             2,
+-            CppCompilerAdapter(Path(os.environ.get("CXX", "c++"))),
++            compiler,
++            aot_library=aot_library,
+         )
+         candidates = [
+             CompiledComponentExecutor(
+                 basis,
+-                Path(
+-                    os.environ.get("VIBEQC_STATIONARY_CACHE", ".cache/stationary-cpu")
+-                ),
++                cache,
+                 tile,
+-                CppCompilerAdapter(Path(os.environ.get("CXX", "c++"))),
++                compiler,
++                aot_library=aot_library,
+             )
+             for tile in (1, 2, 128)
+         ]
+@@ -463,6 +483,7 @@ def check_spd_paired_endpoint(
+                 representation,
+                 measurements.__setitem__,
+                 d_shell=True,
++                component_execution=strategy,
+             )
+         record_property(strategy, measurements)
+         results[strategy] = (measurements, gradients)
+
+===== OVERLAP tests/python/test_stationary_cpu_derivative_aot.py: PR =====
+diff --git a/tests/python/test_stationary_cpu_derivative_aot.py b/tests/python/test_stationary_cpu_derivative_aot.py
+new file mode 100644
+index 00000000..d86f4172
+--- /dev/null
++++ b/tests/python/test_stationary_cpu_derivative_aot.py
+@@ -0,0 +1,213 @@
++"""Packaged CPU stationary derivative inventory and runtime selection."""
++
++from __future__ import annotations
++
++import ctypes as ct
++import os
++import typing
++from pathlib import Path
++
++import numpy as np
++import pytest
++from vibeqc import _stationary_cpu_components as components
++from vibeqc_compiler.integral import first_derivative_schedule as schedule
++
++
++def test_cpu_aot_inventory_is_complete_and_link_safe(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    schedule.derivative_cpu_aot_sources.cache_clear()
++    calls = []
++
++    def emit(requests: typing.Any, *, symbol: str) -> str:
++        calls.append((tuple(requests), symbol))
++        return f"// {symbol} {len(requests)}\n"
++
++    monkeypatch.setattr(schedule, "emit_first_derivative_cpu", emit)
++    try:
++        sources = schedule.derivative_cpu_aot_sources()
++    finally:
++        schedule.derivative_cpu_aot_sources.cache_clear()
++
++    assert len(sources) == schedule.CPU_AOT_SHARDS == 46
++    assert sum(len(requests) for requests, _ in sources) == 362
++    assert [symbol for _, symbol in calls] == [
++        schedule.cpu_aot_symbol(shard) for shard in range(schedule.CPU_AOT_SHARDS)
++    ]
++    assert all(len(requests) <= schedule.REQUESTS_PER_UNIT for requests, _ in sources)
++
++
++def test_packaged_dispatch_loader_is_all_or_nothing() -> None:
++    signature = ct.CFUNCTYPE(
++        ct.c_int,
++        ct.c_uint,
++        ct.POINTER(ct.c_double),
++        ct.c_size_t,
++        ct.POINTER(ct.c_double),
++    )
++
++    @signature
++    def dispatch(
++        kind: int,
++        records: typing.Any,
++        count: int,
++        output: typing.Any,
++    ) -> int:
++        return 0
++
++    library = type("Library", (), {})()
++    for shard in range(schedule.CPU_AOT_SHARDS):
++        setattr(library, schedule.cpu_aot_symbol(shard), dispatch)
++    loaded = components._packaged_aot_dispatchers(library)
++    assert len(loaded) == schedule.CPU_AOT_SHARDS
++
++    delattr(library, schedule.cpu_aot_symbol(7))
++    assert components._packaged_aot_dispatchers(library) == ()
++
++
++def test_component_executor_uses_packaged_aot_without_runtime_compilation(
++    monkeypatch: pytest.MonkeyPatch,
++    tmp_path: Path,
++) -> None:
++    from types import SimpleNamespace
++
++    from vibeqc import _stationary_cpu_components as component_module
++    from vibeqc import _stationary_cpu_streaming as streaming_module
++
++    dispatch_signature = ct.CFUNCTYPE(
++        ct.c_int,
++        ct.c_uint,
++        ct.POINTER(ct.c_double),
++        ct.c_size_t,
++        ct.POINTER(ct.c_double),
++    )
++
++    @dispatch_signature
++    def dispatch(
++        kind: int,
++        records: typing.Any,
++        count: int,
++        output: typing.Any,
++    ) -> int:
++        return 0
++
++    @ct.CFUNCTYPE(ct.c_int)
++    def contract() -> int:
++        return 0
++
++    library = type("Library", (), {})()
++    library.vibeqc_component_contract_cpu = contract
++    for shard in range(schedule.CPU_AOT_SHARDS):
++        setattr(library, schedule.cpu_aot_symbol(shard), dispatch)
++
++    labels = schedule.CPU_AOT_COMPONENTS
++    aos = []
++    primitive_rows = []
++    for index, label in enumerate(labels):
++        powers = [label.count(axis) for axis in "xyz"]
++        row = [0.0] * 16
++        row[:4] = [0, index, 1, 1]
++        row[4:7] = powers
++        row[7] = 1.0
++        aos.extend(row)
++        primitive_rows.extend((0.5 + 0.01 * index, 1.0))
++    basis = SimpleNamespace(
++        natom=1,
++        nprimitive=len(labels),
++        shells=(SimpleNamespace(angular_momentum=2),),
++        packed=np.asarray([0.0, 0.0, 0.0, *primitive_rows, *aos], dtype=float),
++    )
++
++    monkeypatch.setattr(
++        component_module,
++        "derivative_sources",
++        lambda domain: pytest.fail("runtime derivative source generation"),
++    )
++    monkeypatch.setattr(
++        streaming_module,
++        "compile_runtime",
++        lambda *args, **kwargs: pytest.fail("runtime component compilation"),
++    )
++
++    executor = streaming_module.CompiledComponentExecutor(
++        basis,
++        tmp_path,
++        1,
++        None,  # type: ignore[arg-type]
++        aot_library=library,
++    )
++    assert executor.compilation_work["primitive_packaged_aot"] == 1
++    assert executor.compilation_work["primitive_runtime_compilations"] == 0
++    assert executor.compilation_work["component_contract_runtime_compilations"] == 0
++    assert len(executor.dispatchers) == schedule.CPU_AOT_SHARDS
++
++    python_scheduler = component_module.ComponentPrimitiveExecutor(
++        basis,
++        tmp_path,
++        1,
++        None,  # type: ignore[arg-type]
++        aot_library=library,
++    )
++    assert python_scheduler.compilation_work["primitive_packaged_aot"] == 1
++    assert python_scheduler.compilation_work["primitive_runtime_compilations"] == 0
++
++    # The packaged inventory is the full qualified domain, so an s/p-only
++    # basis must select the corresponding full-domain kinds rather than
++    # regenerating a smaller runtime program.
++    subset_labels = ("", "x", "y", "z")
++    subset_aos = []
++    subset_primitives = []
++    for index, label in enumerate(subset_labels):
++        powers = [label.count(axis) for axis in "xyz"]
++        row = [0.0] * 16
++        row[:4] = [0, index, 1, 1]
++        row[4:7] = powers
++        row[7] = 1.0
++        subset_aos.extend(row)
++        subset_primitives.extend((0.7 + 0.01 * index, 1.0))
++    subset_basis = SimpleNamespace(
++        natom=1,
++        nprimitive=len(subset_labels),
++        shells=(
++            SimpleNamespace(angular_momentum=0),
++            SimpleNamespace(angular_momentum=1),
++        ),
++        packed=np.asarray(
++            [0.0, 0.0, 0.0, *subset_primitives, *subset_aos], dtype=float
++        ),
++    )
++    subset = streaming_module.CompiledComponentExecutor(
++        subset_basis,
++        tmp_path,
++        1,
++        None,  # type: ignore[arg-type]
++        aot_library=library,
++    )
++    assert subset.compilation_work["primitive_packaged_aot"] == 1
++    assert subset.compilation_work["primitive_runtime_compilations"] == 0
++    assert subset.compilation_work["component_contract_runtime_compilations"] == 0
++
++
++def test_native_library_exports_stationary_cpu_aot() -> None:
++    path = os.environ.get("VIBEQC_LIBRARY")
++    if not path:
++        pytest.skip("native VibeQC library not supplied")
++    library = ct.CDLL(str(Path(path)))
++    assert library.vibeqc_component_contract_cpu
++    for shard in range(schedule.CPU_AOT_SHARDS):
++        assert getattr(library, schedule.cpu_aot_symbol(shard))
++
++
++def test_cmake_registers_the_fixed_cpu_aot_inventory() -> None:
++    root = Path(__file__).resolve().parents[2]
++    top = (root / "CMakeLists.txt").read_text(encoding="utf-8")
++    generated = (root / "cmake/VibeQCGeneratedSources.cmake").read_text(
++        encoding="utf-8"
++    )
++    assert "VIBEQC_ENABLE_STATIONARY_CPU_FORCE_AOT" in top
++    assert "foreach(_vibeqc_stationary_cpu_shard RANGE 0 45)" in generated
++    assert "generate_stationary_cpu_derivative_aot.py" in generated
++    assert "ADD_TO_TARGET" in generated
++    assert "-ffp-contract=off" in generated
++    identity = (root / "cmake/VibeQCSourceIdentity.json").read_text(encoding="utf-8")
++    assert "tools/generate_stationary_cpu_derivative_aot.py" in identity
+
+===== OVERLAP tests/python/test_stationary_cpu_derivative_aot.py: MASTER =====
+diff --git a/tests/python/test_stationary_cpu_derivative_aot.py b/tests/python/test_stationary_cpu_derivative_aot.py
+new file mode 100644
+index 00000000..d86f4172
+--- /dev/null
++++ b/tests/python/test_stationary_cpu_derivative_aot.py
+@@ -0,0 +1,213 @@
++"""Packaged CPU stationary derivative inventory and runtime selection."""
++
++from __future__ import annotations
++
++import ctypes as ct
++import os
++import typing
++from pathlib import Path
++
++import numpy as np
++import pytest
++from vibeqc import _stationary_cpu_components as components
++from vibeqc_compiler.integral import first_derivative_schedule as schedule
++
++
++def test_cpu_aot_inventory_is_complete_and_link_safe(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    schedule.derivative_cpu_aot_sources.cache_clear()
++    calls = []
++
++    def emit(requests: typing.Any, *, symbol: str) -> str:
++        calls.append((tuple(requests), symbol))
++        return f"// {symbol} {len(requests)}\n"
++
++    monkeypatch.setattr(schedule, "emit_first_derivative_cpu", emit)
++    try:
++        sources = schedule.derivative_cpu_aot_sources()
++    finally:
++        schedule.derivative_cpu_aot_sources.cache_clear()
++
++    assert len(sources) == schedule.CPU_AOT_SHARDS == 46
++    assert sum(len(requests) for requests, _ in sources) == 362
++    assert [symbol for _, symbol in calls] == [
++        schedule.cpu_aot_symbol(shard) for shard in range(schedule.CPU_AOT_SHARDS)
++    ]
++    assert all(len(requests) <= schedule.REQUESTS_PER_UNIT for requests, _ in sources)
++
++
++def test_packaged_dispatch_loader_is_all_or_nothing() -> None:
++    signature = ct.CFUNCTYPE(
++        ct.c_int,
++        ct.c_uint,
++        ct.POINTER(ct.c_double),
++        ct.c_size_t,
++        ct.POINTER(ct.c_double),
++    )
++
++    @signature
++    def dispatch(
++        kind: int,
++        records: typing.Any,
++        count: int,
++        output: typing.Any,
++    ) -> int:
++        return 0
++
++    library = type("Library", (), {})()
++    for shard in range(schedule.CPU_AOT_SHARDS):
++        setattr(library, schedule.cpu_aot_symbol(shard), dispatch)
++    loaded = components._packaged_aot_dispatchers(library)
++    assert len(loaded) == schedule.CPU_AOT_SHARDS
++
++    delattr(library, schedule.cpu_aot_symbol(7))
++    assert components._packaged_aot_dispatchers(library) == ()
++
++
++def test_component_executor_uses_packaged_aot_without_runtime_compilation(
++    monkeypatch: pytest.MonkeyPatch,
++    tmp_path: Path,
++) -> None:
++    from types import SimpleNamespace
++
++    from vibeqc import _stationary_cpu_components as component_module
++    from vibeqc import _stationary_cpu_streaming as streaming_module
++
++    dispatch_signature = ct.CFUNCTYPE(
++        ct.c_int,
++        ct.c_uint,
++        ct.POINTER(ct.c_double),
++        ct.c_size_t,
++        ct.POINTER(ct.c_double),
++    )
++
++    @dispatch_signature
++    def dispatch(
++        kind: int,
++        records: typing.Any,
++        count: int,
++        output: typing.Any,
++    ) -> int:
++        return 0
++
++    @ct.CFUNCTYPE(ct.c_int)
++    def contract() -> int:
++        return 0
++
++    library = type("Library", (), {})()
++    library.vibeqc_component_contract_cpu = contract
++    for shard in range(schedule.CPU_AOT_SHARDS):
++        setattr(library, schedule.cpu_aot_symbol(shard), dispatch)
++
++    labels = schedule.CPU_AOT_COMPONENTS
++    aos = []
++    primitive_rows = []
++    for index, label in enumerate(labels):
++        powers = [label.count(axis) for axis in "xyz"]
++        row = [0.0] * 16
++        row[:4] = [0, index, 1, 1]
++        row[4:7] = powers
++        row[7] = 1.0
++        aos.extend(row)
++        primitive_rows.extend((0.5 + 0.01 * index, 1.0))
++    basis = SimpleNamespace(
++        natom=1,
++        nprimitive=len(labels),
++        shells=(SimpleNamespace(angular_momentum=2),),
++        packed=np.asarray([0.0, 0.0, 0.0, *primitive_rows, *aos], dtype=float),
++    )
++
++    monkeypatch.setattr(
++        component_module,
++        "derivative_sources",
++        lambda domain: pytest.fail("runtime derivative source generation"),
++    )
++    monkeypatch.setattr(
++        streaming_module,
++        "compile_runtime",
++        lambda *args, **kwargs: pytest.fail("runtime component compilation"),
++    )
++
++    executor = streaming_module.CompiledComponentExecutor(
++        basis,
++        tmp_path,
++        1,
++        None,  # type: ignore[arg-type]
++        aot_library=library,
++    )
++    assert executor.compilation_work["primitive_packaged_aot"] == 1
++    assert executor.compilation_work["primitive_runtime_compilations"] == 0
++    assert executor.compilation_work["component_contract_runtime_compilations"] == 0
++    assert len(executor.dispatchers) == schedule.CPU_AOT_SHARDS
++
++    python_scheduler = component_module.ComponentPrimitiveExecutor(
++        basis,
++        tmp_path,
++        1,
++        None,  # type: ignore[arg-type]
++        aot_library=library,
++    )
++    assert python_scheduler.compilation_work["primitive_packaged_aot"] == 1
++    assert python_scheduler.compilation_work["primitive_runtime_compilations"] == 0
++
++    # The packaged inventory is the full qualified domain, so an s/p-only
++    # basis must select the corresponding full-domain kinds rather than
++    # regenerating a smaller runtime program.
++    subset_labels = ("", "x", "y", "z")
++    subset_aos = []
++    subset_primitives = []
++    for index, label in enumerate(subset_labels):
++        powers = [label.count(axis) for axis in "xyz"]
++        row = [0.0] * 16
++        row[:4] = [0, index, 1, 1]
++        row[4:7] = powers
++        row[7] = 1.0
++        subset_aos.extend(row)
++        subset_primitives.extend((0.7 + 0.01 * index, 1.0))
++    subset_basis = SimpleNamespace(
++        natom=1,
++        nprimitive=len(subset_labels),
++        shells=(
++            SimpleNamespace(angular_momentum=0),
++            SimpleNamespace(angular_momentum=1),
++        ),
++        packed=np.asarray(
++            [0.0, 0.0, 0.0, *subset_primitives, *subset_aos], dtype=float
++        ),
++    )
++    subset = streaming_module.CompiledComponentExecutor(
++        subset_basis,
++        tmp_path,
++        1,
++        None,  # type: ignore[arg-type]
++        aot_library=library,
++    )
++    assert subset.compilation_work["primitive_packaged_aot"] == 1
++    assert subset.compilation_work["primitive_runtime_compilations"] == 0
++    assert subset.compilation_work["component_contract_runtime_compilations"] == 0
++
++
++def test_native_library_exports_stationary_cpu_aot() -> None:
++    path = os.environ.get("VIBEQC_LIBRARY")
++    if not path:
++        pytest.skip("native VibeQC library not supplied")
++    library = ct.CDLL(str(Path(path)))
++    assert library.vibeqc_component_contract_cpu
++    for shard in range(schedule.CPU_AOT_SHARDS):
++        assert getattr(library, schedule.cpu_aot_symbol(shard))
++
++
++def test_cmake_registers_the_fixed_cpu_aot_inventory() -> None:
++    root = Path(__file__).resolve().parents[2]
++    top = (root / "CMakeLists.txt").read_text(encoding="utf-8")
++    generated = (root / "cmake/VibeQCGeneratedSources.cmake").read_text(
++        encoding="utf-8"
++    )
++    assert "VIBEQC_ENABLE_STATIONARY_CPU_FORCE_AOT" in top
++    assert "foreach(_vibeqc_stationary_cpu_shard RANGE 0 45)" in generated
++    assert "generate_stationary_cpu_derivative_aot.py" in generated
++    assert "ADD_TO_TARGET" in generated
++    assert "-ffp-contract=off" in generated
++    identity = (root / "cmake/VibeQCSourceIdentity.json").read_text(encoding="utf-8")
++    assert "tools/generate_stationary_cpu_derivative_aot.py" in identity
+
+===== OVERLAP tools/generate_stationary_cpu_derivative_aot.py: PR =====
+diff --git a/tools/generate_stationary_cpu_derivative_aot.py b/tools/generate_stationary_cpu_derivative_aot.py
+new file mode 100644
+index 00000000..5640ba28
+--- /dev/null
++++ b/tools/generate_stationary_cpu_derivative_aot.py
+@@ -0,0 +1,41 @@
++"""Emit the packaged s/p/d stationary CPU first-derivative inventory."""
++
++from __future__ import annotations
++
++import argparse
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path[:0] = [str(ROOT / "python"), str(ROOT)]
++
++from vibeqc_compiler.integral.first_derivative_schedule import (
++    CPU_AOT_SHARDS,
++    derivative_cpu_aot_sources,
++)
++
++
++def _write_if_changed(path: Path, content: str) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    if path.exists() and path.read_text(encoding="utf-8") == content:
++        return
++    path.write_text(content, encoding="utf-8")
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-directory", type=Path, required=True)
++    args = parser.parse_args()
++
++    sources = derivative_cpu_aot_sources()
++    if len(sources) != CPU_AOT_SHARDS:
++        raise RuntimeError("stationary CPU derivative AOT shard contract drift")
++    for shard, (_, source) in enumerate(sources):
++        _write_if_changed(
++            args.output_directory / f"vibeqc_stationary_cpu_derivative_{shard}.cpp",
++            source,
++        )
++
++
++if __name__ == "__main__":
++    main()
+
+===== OVERLAP tools/generate_stationary_cpu_derivative_aot.py: MASTER =====
+diff --git a/tools/generate_stationary_cpu_derivative_aot.py b/tools/generate_stationary_cpu_derivative_aot.py
+new file mode 100644
+index 00000000..5640ba28
+--- /dev/null
++++ b/tools/generate_stationary_cpu_derivative_aot.py
+@@ -0,0 +1,41 @@
++"""Emit the packaged s/p/d stationary CPU first-derivative inventory."""
++
++from __future__ import annotations
++
++import argparse
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path[:0] = [str(ROOT / "python"), str(ROOT)]
++
++from vibeqc_compiler.integral.first_derivative_schedule import (
++    CPU_AOT_SHARDS,
++    derivative_cpu_aot_sources,
++)
++
++
++def _write_if_changed(path: Path, content: str) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    if path.exists() and path.read_text(encoding="utf-8") == content:
++        return
++    path.write_text(content, encoding="utf-8")
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-directory", type=Path, required=True)
++    args = parser.parse_args()
++
++    sources = derivative_cpu_aot_sources()
++    if len(sources) != CPU_AOT_SHARDS:
++        raise RuntimeError("stationary CPU derivative AOT shard contract drift")
++    for shard, (_, source) in enumerate(sources):
++        _write_if_changed(
++            args.output_directory / f"vibeqc_stationary_cpu_derivative_{shard}.cpp",
++            source,
++        )
++
++
++if __name__ == "__main__":
++    main()

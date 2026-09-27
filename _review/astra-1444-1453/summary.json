@@ -1,0 +1,131 @@
+{
+  "master": "c308ff84dd0fb68a83a027ae02206fe98ac7c7ee",
+  "prs": {
+    "1444": {
+      "head": "155e0b0ac50b5279a35846379f8fa7fb5fb610c3",
+      "base": "8f62fe00978c6d4a16fc8587d48168cdb95d4b97",
+      "tree": "26f5d425981301584930e851cffaa7fc972215b8",
+      "clean": false,
+      "changed": [
+        "src/dft/dispersion/d4_cuda.cu",
+        "src/dft/dispersion/d4_math.hpp",
+        "src/dft/dispersion/d4_reference.hpp",
+        "src/xtb/native/CUDA_SOURCE_PROVENANCE.json",
+        "src/xtb/native/src/backends/cuda/gfn2_d4.cu",
+        "src/xtb/native/src/backends/cuda/gfn2_d4.cuh",
+        "tests/python/test_gfn2_cuda_provenance.py"
+      ],
+      "overlap": [
+        "src/dft/dispersion/d4_cuda.cu",
+        "src/dft/dispersion/d4_math.hpp",
+        "src/dft/dispersion/d4_reference.hpp",
+        "src/xtb/native/CUDA_SOURCE_PROVENANCE.json",
+        "src/xtb/native/src/backends/cuda/gfn2_d4.cu",
+        "tests/python/test_gfn2_cuda_provenance.py"
+      ]
+    },
+    "1448": {
+      "head": "1434916287df7c2ce1ceb42c4adf0d48fe0529c0",
+      "base": "8f62fe00978c6d4a16fc8587d48168cdb95d4b97",
+      "tree": "d97f153c013ed550acf98746460d68eb0c9a4fd6",
+      "clean": false,
+      "changed": [
+        "python/vibeqc_compiler/common/program_region.py",
+        "python/vibeqc_compiler/dft/xc_program.py",
+        "tests/python/test_dft_xc_program_region.py",
+        "tests/python/test_program_ir_region.py",
+        "tests/python/test_program_region_boundary_validation.py"
+      ],
+      "overlap": [
+        "python/vibeqc_compiler/common/program_region.py",
+        "tests/python/test_program_ir_region.py",
+        "tests/python/test_program_region_boundary_validation.py"
+      ]
+    },
+    "1452": {
+      "head": "0f03dd5993bd7dcc0e58b20afdf6cae57df815df",
+      "base": "492a54ccefda5c093f39f213d3399372374d415e",
+      "tree": "bfd068cdaada93e7c4370fb3a85f2c4bc2e441f3",
+      "clean": false,
+      "changed": [
+        "CMakeLists.txt",
+        "cmake/VibeQCGeneratedSources.cmake",
+        "cmake/VibeQCSourceIdentity.json",
+        "cmake/VibeQCSources.cmake",
+        "python/vibeqc/_stationary_cpu.py",
+        "python/vibeqc/_stationary_cpu_components.py",
+        "python/vibeqc/_stationary_cpu_streaming.py",
+        "python/vibeqc/_stationary_rsh_cpu.py",
+        "python/vibeqc_compiler/integral/first_derivative_native.py",
+        "python/vibeqc_compiler/integral/first_derivative_schedule.py",
+        "python/vibeqc_compiler/integral/rsh_cpu_aot.py",
+        "python/vibeqc_compiler/integral/weighted_eri_execute.py",
+        "python/vibeqc_compiler/integral/weighted_eri_native.py",
+        "src/integrals/first_derivative_component_runtime.hpp",
+        "src/integrals/stationary_component_contract.cpp",
+        "tests/python/test_ecp_public_cpu.py",
+        "tests/python/test_stationary_cpu_derivative_aot.py",
+        "tests/python/test_wb97mv_complete.py",
+        "tests/python/test_wb97mv_rsh_cpu_aot.py",
+        "tests/python/test_weighted_eri_binary_identity.py",
+        "tools/generate_stationary_cpu_derivative_aot.py",
+        "tools/generate_wb97mv_rsh_cpu_aot.py"
+      ],
+      "overlap": [
+        "CMakeLists.txt",
+        "cmake/VibeQCGeneratedSources.cmake",
+        "cmake/VibeQCSourceIdentity.json",
+        "cmake/VibeQCSources.cmake",
+        "python/vibeqc/_stationary_cpu.py",
+        "python/vibeqc/_stationary_cpu_components.py",
+        "python/vibeqc/_stationary_cpu_streaming.py",
+        "python/vibeqc_compiler/integral/first_derivative_native.py",
+        "python/vibeqc_compiler/integral/first_derivative_schedule.py",
+        "src/integrals/first_derivative_component_runtime.hpp",
+        "src/integrals/stationary_component_contract.cpp",
+        "tests/python/test_ecp_public_cpu.py",
+        "tests/python/test_stationary_cpu_derivative_aot.py",
+        "tools/generate_stationary_cpu_derivative_aot.py"
+      ]
+    },
+    "1453": {
+      "head": "344b6fa480b078c1fcd7a7298dd7c9fca716bd97",
+      "base": "38a9692be863e97072134623623f72e15131ccd4",
+      "tree": "b0f9c3e0c6a39a4f0878ef58fb8ca61fe3b66da0",
+      "clean": false,
+      "changed": [
+        "docs/developer/electronic_structure_boundaries.md",
+        "src/cc/rccsdt_force.cpp",
+        "src/cc/rccsdt_force.hpp",
+        "src/hf/reference.hpp",
+        "src/methods/rccsd_method.cpp",
+        "src/methods/rccsd_method.hpp",
+        "src/posthf/bridge.cpp",
+        "src/posthf/mp2_derivative.hpp",
+        "src/posthf/mp2_derivative_common.cpp",
+        "src/posthf/mp2_derivative_common.hpp",
+        "src/posthf/mp2_derivative_cpu.cpp",
+        "src/posthf/mp2_derivative_cuda.cpp",
+        "src/posthf/mp2_energy.cpp",
+        "src/posthf/mp2_energy.hpp",
+        "src/posthf/mp2_force.cpp",
+        "src/posthf/mp2_force.hpp",
+        "src/posthf/mp2_gradient.cpp",
+        "src/posthf/mp2_gradient.hpp",
+        "src/posthf/native_provider.cpp",
+        "src/posthf/native_provider.hpp",
+        "src/posthf/ri_mp2_cuda.cu",
+        "src/posthf/ri_mp2_cuda.hpp",
+        "src/scf/types.hpp",
+        "tests/python/test_electronic_structure_boundaries.py",
+        "tests/python/test_ri_mp2_reverse_memory.py",
+        "tools/check_electronic_structure_boundaries.py"
+      ],
+      "overlap": [
+        "src/cc/rccsdt_force.cpp",
+        "src/cc/rccsdt_force.hpp",
+        "src/methods/rccsd_method.cpp"
+      ]
+    }
+  }
+}

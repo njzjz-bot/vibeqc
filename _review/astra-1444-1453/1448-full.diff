@@ -1,0 +1,1480 @@
+diff --git a/python/vibeqc_compiler/common/program_region.py b/python/vibeqc_compiler/common/program_region.py
+new file mode 100644
+index 00000000..95fb1566
+--- /dev/null
++++ b/python/vibeqc_compiler/common/program_region.py
+@@ -0,0 +1,367 @@
++"""Measured implementation candidates for contiguous ProgramIR regions.
++
++This module is a compiler planning boundary, not a scientific fusion engine.
++ProgramIR keeps opaque provider calls by default. A region may be replaced only
++when every covered provider is explicitly proven PURE through the shared effect
++contract and an owning subsystem supplies a concrete executable provider
++identity.
++
++The shared ScheduleContract remains the sole profitability/promotion vocabulary.
++This module only derives whole-region boundaries, binds alternate implementations,
++and applies a selected candidate without inventing a second tuner or cache.
++"""
++
++from __future__ import annotations
++
++import collections.abc
++import typing
++from dataclasses import dataclass
++
++from .gpu_profitability import ENDPOINT_NOISE_FRACTION
++from .liveness import EffectKind
++from .program import PlanCall, ProgramIR
++from .provenance import canonical_hash
++from .schedule import ScheduleContract, select_measured_schedule_contract
++
++PROGRAM_REGION_SCHEMA = "vibeqc.compiler.program-region.v1"
++PROGRAM_REGION_CANDIDATE_SCHEMA = "vibeqc.compiler.program-region-candidate.v1"
++
++
++def _text(value: typing.Any, label: str) -> str:
++    if type(value) is not str or not value.strip():
++        raise ValueError(f"{label} must be a nonempty string")
++    return value
++
++
++def _digest(value: typing.Any, label: str) -> str:
++    if (
++        type(value) is not str
++        or len(value) != 64
++        or any(character not in "0123456789abcdef" for character in value)
++    ):
++        raise ValueError(f"{label} must be a SHA-256 digest")
++    return value
++
++
++def _unique_names(values: typing.Iterable[str], label: str) -> tuple[str, ...]:
++    materialized = tuple(_text(value, label) for value in values)
++    if len(set(materialized)) != len(materialized):
++        raise ValueError(f"duplicate {label}")
++    return materialized
++
++
++def _normalize_effects(
++    effects: collections.abc.Mapping[str, EffectKind],
++) -> dict[str, EffectKind]:
++    if not isinstance(effects, collections.abc.Mapping):
++        raise TypeError("ProgramIR region effects must be a provider mapping")
++    normalized: dict[str, EffectKind] = {}
++    for provider, effect in effects.items():
++        provider_name = _text(provider, "effect provider")
++        if not isinstance(effect, EffectKind):
++            raise TypeError("ProgramIR region effects must use EffectKind")
++        normalized[provider_name] = effect
++    return normalized
++
++
++@dataclass(frozen=True, slots=True)
++class ProgramRegion:
++    """One contiguous, proven-pure ProgramIR subgraph and its external boundary."""
++
++    name: str
++    program_identity: str
++    call_names: tuple[str, ...]
++    reads: tuple[str, ...]
++    writes: tuple[str, ...]
++    internal_buffers: tuple[str, ...]
++
++    def __post_init__(self) -> None:
++        _text(self.name, "region name")
++        _digest(self.program_identity, "program identity")
++        object.__setattr__(
++            self, "call_names", _unique_names(self.call_names, "region call name")
++        )
++        object.__setattr__(self, "reads", _unique_names(self.reads, "region read"))
++        object.__setattr__(self, "writes", _unique_names(self.writes, "region write"))
++        object.__setattr__(
++            self,
++            "internal_buffers",
++            _unique_names(self.internal_buffers, "region internal buffer"),
++        )
++        if len(self.call_names) < 2:
++            raise ValueError("ProgramIR fusion region requires at least two calls")
++        if not self.writes:
++            raise ValueError("ProgramIR fusion region requires an external result")
++        names = set(self.reads)
++        if names.intersection(self.writes):
++            raise ValueError("ProgramIR region reads and writes must be disjoint")
++        if names.intersection(self.internal_buffers):
++            raise ValueError("ProgramIR region reads cannot be internal buffers")
++        if set(self.writes).intersection(self.internal_buffers):
++            raise ValueError("ProgramIR region writes cannot be internal buffers")
++
++    @property
++    def identity(self) -> str:
++        return canonical_hash(self.to_payload())
++
++    @property
++    def consumer(self) -> str:
++        """Stable ScheduleContract consumer key for this exact region."""
++
++        return f"program-region:{self.identity}"
++
++    def to_payload(self) -> dict[str, typing.Any]:
++        return {
++            "schema": PROGRAM_REGION_SCHEMA,
++            "name": self.name,
++            "program_identity": self.program_identity,
++            "call_names": list(self.call_names),
++            "reads": list(self.reads),
++            "writes": list(self.writes),
++            "internal_buffers": list(self.internal_buffers),
++        }
++
++
++def _region_boundary(
++    program: ProgramIR, start: int, end: int
++) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
++    """Derive the exact ordered dataflow boundary from the source graph."""
++    calls = program.calls[start : end + 1]
++    boundary_reads: list[str] = []
++    produced_so_far: set[str] = set()
++    produced_order: list[str] = []
++    for call in calls:
++        for read in call.reads:
++            if read not in produced_so_far and read not in boundary_reads:
++                boundary_reads.append(read)
++        for write in call.writes:
++            produced_so_far.add(write)
++            produced_order.append(write)
++
++    later_reads = {read for call in program.calls[end + 1 :] for read in call.reads}
++    externally_needed = later_reads.union(program.outputs)
++    boundary_writes = tuple(
++        write for write in produced_order if write in externally_needed
++    )
++    internal_buffers = tuple(
++        write for write in produced_order if write not in externally_needed
++    )
++
++    return tuple(boundary_reads), boundary_writes, internal_buffers
++
++
++def derive_program_region(
++    program: ProgramIR,
++    *,
++    name: str,
++    start_call: str,
++    end_call: str,
++    effects: collections.abc.Mapping[str, EffectKind],
++) -> ProgramRegion:
++    """Derive a fusible contiguous region and fail closed on opaque/effectful calls.
++
++    The region boundary is structural. Reads are values entering from outside the
++    region. Writes are region-produced values observed by later calls or exported
++    by the ProgramIR. Other produced values are internal materializations that a
++    qualified fused implementation may eliminate.
++    """
++
++    if not isinstance(program, ProgramIR):
++        raise TypeError("ProgramIR region derivation requires ProgramIR")
++    name = _text(name, "region name")
++    start_call = _text(start_call, "start call")
++    end_call = _text(end_call, "end call")
++    normalized = _normalize_effects(effects)
++
++    call_names = tuple(call.name for call in program.calls)
++    if start_call not in call_names or end_call not in call_names:
++        raise ValueError("ProgramIR region references an unknown call")
++    start = call_names.index(start_call)
++    end = call_names.index(end_call)
++    if start > end:
++        raise ValueError("ProgramIR region start must not follow its end")
++    if start == end:
++        raise ValueError("ProgramIR fusion region requires at least two calls")
++
++    calls = program.calls[start : end + 1]
++    for call in calls:
++        effect = normalized.get(call.provider, EffectKind.OPAQUE)
++        if effect is not EffectKind.PURE:
++            raise ValueError(
++                f"{call.name}: provider {call.provider!r} is not proven pure"
++            )
++
++    boundary_reads, boundary_writes, internal_buffers = _region_boundary(
++        program, start, end
++    )
++
++    return ProgramRegion(
++        name=name,
++        program_identity=program.identity,
++        call_names=tuple(call.name for call in calls),
++        reads=tuple(boundary_reads),
++        writes=boundary_writes,
++        internal_buffers=internal_buffers,
++    )
++
++
++@dataclass(frozen=True, slots=True)
++class ProgramRegionCandidate:
++    """One original or alternate executable implementation of a ProgramRegion."""
++
++    name: str
++    region: ProgramRegion
++    schedule: ScheduleContract
++    backend: str
++    provider: str | None = None
++    implementation_identity: str | None = None
++
++    def __post_init__(self) -> None:
++        _text(self.name, "region candidate name")
++        _text(self.backend, "region candidate backend")
++        if not isinstance(self.region, ProgramRegion):
++            raise TypeError("region candidate requires ProgramRegion")
++        if not isinstance(self.schedule, ScheduleContract):
++            raise TypeError("region candidate requires ScheduleContract")
++        if self.schedule.consumer != self.region.consumer:
++            raise ValueError("region candidate schedule is bound to another region")
++        if self.schedule.fallback:
++            if self.provider is not None or self.implementation_identity is not None:
++                raise ValueError(
++                    "fallback region candidate must preserve the original calls"
++                )
++        else:
++            _text(self.provider, "region candidate provider")
++            _text(
++                self.implementation_identity,
++                "region candidate implementation identity",
++            )
++
++    @property
++    def replacement_identity(self) -> str:
++        if self.schedule.fallback:
++            raise ValueError("fallback region candidate has no replacement identity")
++        return canonical_hash(
++            {
++                "schema": PROGRAM_REGION_CANDIDATE_SCHEMA,
++                "region": self.region.identity,
++                "candidate": self.name,
++                "backend": self.backend,
++                "provider": self.provider,
++                "implementation": self.implementation_identity,
++                "schedule": self.schedule.identity,
++            }
++        )
++
++    @property
++    def identity(self) -> str:
++        return canonical_hash(self.to_payload())
++
++    def to_payload(self) -> dict[str, typing.Any]:
++        return {
++            "schema": PROGRAM_REGION_CANDIDATE_SCHEMA,
++            "name": self.name,
++            "region": self.region.to_payload(),
++            "backend": self.backend,
++            "provider": self.provider,
++            "implementation_identity": self.implementation_identity,
++            "schedule": self.schedule.to_payload(),
++        }
++
++
++def select_program_region_candidate(
++    candidates: typing.Iterable[ProgramRegionCandidate],
++    *,
++    minimum_speedup: float,
++    endpoint_noise_fraction: float = ENDPOINT_NOISE_FRACTION,
++) -> ProgramRegionCandidate:
++    """Select one measured region backend using the shared schedule policy."""
++
++    materialized = tuple(candidates)
++    if not materialized:
++        raise ValueError("ProgramIR region selection requires candidates")
++    if any(
++        not isinstance(candidate, ProgramRegionCandidate) for candidate in materialized
++    ):
++        raise TypeError("ProgramIR region selection requires region candidates")
++    if len({candidate.name for candidate in materialized}) != len(materialized):
++        raise ValueError("duplicate ProgramIR region candidate name")
++    if len({candidate.region.identity for candidate in materialized}) != 1:
++        raise ValueError("ProgramIR region candidates must target one region")
++    if len({candidate.schedule.identity for candidate in materialized}) != len(
++        materialized
++    ):
++        raise ValueError("duplicate ProgramIR region schedule identity")
++
++    selected = select_measured_schedule_contract(
++        tuple(candidate.schedule for candidate in materialized),
++        minimum_speedup=minimum_speedup,
++        endpoint_noise_fraction=endpoint_noise_fraction,
++    )
++    for candidate in materialized:
++        if candidate.schedule is selected:
++            return candidate
++    raise AssertionError(
++        "shared schedule selector returned an unknown region candidate"
++    )
++
++
++def apply_program_region_candidate(
++    program: ProgramIR,
++    candidate: ProgramRegionCandidate,
++) -> ProgramIR:
++    """Replace a qualified region with one executable provider call.
++
++    The original fallback is returned unchanged. An alternate implementation
++    must be legal and bound to the exact source ProgramIR identity. Internal
++    region buffers are removed; boundary buffers retain their original owners,
++    layouts, capacities, and public names.
++    """
++
++    if not isinstance(program, ProgramIR):
++        raise TypeError("ProgramIR region application requires ProgramIR")
++    if not isinstance(candidate, ProgramRegionCandidate):
++        raise TypeError("ProgramIR region application requires a region candidate")
++    region = candidate.region
++    if region.program_identity != program.identity:
++        raise ValueError("region candidate is stale for this ProgramIR")
++    if candidate.schedule.fallback:
++        return program
++    if not candidate.schedule.legal:
++        raise ValueError("cannot apply an illegal ProgramIR region candidate")
++
++    call_names = tuple(call.name for call in program.calls)
++    positions = tuple(call_names.index(name) for name in region.call_names)
++    expected = tuple(range(positions[0], positions[0] + len(positions)))
++    if positions != expected:
++        raise ValueError("ProgramIR region calls are no longer contiguous")
++
++    # ProgramRegion is a public value object: a reconstructed/replaced instance
++    # can keep the source digest while changing its ABI or elimination list.
++    # ProgramIR's SSA check alone cannot detect omitted or reordered inputs.
++    boundary = _region_boundary(program, positions[0], positions[-1])
++    if boundary != (region.reads, region.writes, region.internal_buffers):
++        raise ValueError("ProgramIR region boundary does not match the source graph")
++
++    outside_names = set(call_names).difference(region.call_names)
++    if candidate.name in outside_names:
++        raise ValueError("region replacement call name collides with another call")
++
++    first = positions[0]
++    last = positions[-1]
++    replacement = PlanCall(
++        candidate.name,
++        typing.cast("str", candidate.provider),
++        candidate.replacement_identity,
++        region.reads,
++        region.writes,
++    )
++    internal = set(region.internal_buffers)
++    return ProgramIR(
++        program.name,
++        tuple(buffer for buffer in program.buffers if buffer.name not in internal),
++        program.inputs,
++        (*program.calls[:first], replacement, *program.calls[last + 1 :]),
++        program.outputs,
++        schema_version=program.schema_version,
++    )
+diff --git a/python/vibeqc_compiler/dft/xc_program.py b/python/vibeqc_compiler/dft/xc_program.py
+new file mode 100644
+index 00000000..8da2327e
+--- /dev/null
++++ b/python/vibeqc_compiler/dft/xc_program.py
+@@ -0,0 +1,391 @@
++"""Bind native CUDA-KS XC staging routes to ProgramIR region selection.
++
++This module describes the actual `CudaKsPlan::stage_xc` execution boundary.
++The portable host-unfused route downloads the current device density, evaluates
++the audited CPU XC/Vxc implementation, then uploads Vxc plus scalar totals/error
++back to the CUDA KS state. The existing resident CudaXcPlan is an alternate
++implementation of exactly that boundary.
++
++Scientific admission remains owned by DFT. ProgramIR owns only the replaceable
++execution region, while ScheduleContract remains the shared measured-promotion
++and fallback vocabulary. No XC equation or CUDA kernel is duplicated here.
++"""
++
++from __future__ import annotations
++
++import math
++import typing
++from dataclasses import dataclass, replace
++
++from vibeqc_compiler.common.liveness import EffectKind
++from vibeqc_compiler.common.program import PlanCall, ProgramBuffer, ProgramIR
++from vibeqc_compiler.common.program_region import (
++    ProgramRegion,
++    ProgramRegionCandidate,
++    apply_program_region_candidate,
++    derive_program_region,
++    select_program_region_candidate,
++)
++from vibeqc_compiler.common.provenance import canonical_hash
++from vibeqc_compiler.common.resources import byte_product
++from vibeqc_compiler.common.schedule import ScheduleResources
++
++from .xc_schedule import GridXcCandidateAssessment, GridXcCandidateShape
++
++if typing.TYPE_CHECKING:
++    import collections.abc
++
++    from vibeqc_compiler.common.schedule import ScheduleContract
++
++_HOST_REGION_EFFECTS = {
++    "runtime.cuda.ks_xc_density_d2h": EffectKind.PURE,
++    "dft.CudaKsPlan.split_host_spin_density": EffectKind.PURE,
++    "dft.CudaKsPlan.host_unfused_xc": EffectKind.PURE,
++    "runtime.cuda.ks_xc_result_h2d": EffectKind.PURE,
++}
++
++_TOTAL_BYTES = 3 * 8
++_ERROR_BYTES = 4
++
++
++def _text(value: typing.Any, label: str) -> str:
++    if type(value) is not str or not value.strip():
++        raise ValueError(f"{label} must be a nonempty string")
++    return value
++
++
++def _device_space(ordinal: int) -> str:
++    if type(ordinal) is not int or ordinal < 0:
++        raise ValueError("grid/XC device ordinal must be a non-negative integer")
++    return f"device:{ordinal}"
++
++
++def _density_bytes(shape: GridXcCandidateShape) -> int:
++    if not isinstance(shape, GridXcCandidateShape):
++        raise TypeError("native KS XC ProgramIR requires GridXcCandidateShape")
++    return byte_product(8, shape.spins, shape.nao, shape.nao)
++
++
++def native_ks_host_unfused_xc_program(
++    shape: GridXcCandidateShape,
++    *,
++    density_identity: str,
++    host_xc_identity: str,
++    transfer_identity: str,
++    device_ordinal: int = 0,
++) -> ProgramIR:
++    """Describe the current host-unfused `CudaKsPlan::stage_xc` boundary."""
++
++    density_identity = _text(density_identity, "KS density identity")
++    host_xc_identity = _text(host_xc_identity, "host XC identity")
++    transfer_identity = _text(transfer_identity, "transfer identity")
++    device = _device_space(device_ordinal)
++    density_bytes = _density_bytes(shape)
++    matrix_bytes = byte_product(8, shape.nao, shape.nao)
++    topology = {
++        "npoint": shape.npoint,
++        "tile_points": shape.tile_points,
++        "nao": shape.nao,
++        "spins": shape.spins,
++    }
++
++    # Device inputs/outputs are boundary tokens. Their physical owners live in
++    # the prepared KS arena, so ProgramIR does not charge those owners again.
++    buffers = [
++        ProgramBuffer("density_device", 0, device),
++        ProgramBuffer("density_host", density_bytes),
++    ]
++    calls = [
++        PlanCall(
++            "download_density",
++            "runtime.cuda.ks_xc_density_d2h",
++            canonical_hash(
++                {
++                    "transfer": transfer_identity,
++                    "direction": "d2h",
++                    "bytes": density_bytes,
++                    "topology": topology,
++                }
++            ),
++            ("density_device",),
++            ("density_host",),
++        )
++    ]
++    host_density_reads: tuple[str, ...] = ("density_host",)
++    if shape.spins == 2:
++        buffers.extend(
++            (
++                ProgramBuffer("alpha_host", matrix_bytes),
++                ProgramBuffer("beta_host", matrix_bytes),
++            )
++        )
++        calls.append(
++            PlanCall(
++                "split_spin_density",
++                "dft.CudaKsPlan.split_host_spin_density",
++                canonical_hash(
++                    {
++                        "density": density_identity,
++                        "topology": topology,
++                    }
++                ),
++                ("density_host",),
++                ("alpha_host", "beta_host"),
++            )
++        )
++        host_density_reads = ("alpha_host", "beta_host")
++
++    buffers.extend(
++        (
++            ProgramBuffer("vxc_host", density_bytes),
++            ProgramBuffer("totals_host", _TOTAL_BYTES),
++            ProgramBuffer("error_host", _ERROR_BYTES),
++            ProgramBuffer("vxc_device", 0, device),
++            ProgramBuffer("totals_device", 0, device),
++            ProgramBuffer("error_device", 0, device),
++        )
++    )
++    calls.extend(
++        (
++            PlanCall(
++                "host_xc_vxc",
++                "dft.CudaKsPlan.host_unfused_xc",
++                canonical_hash(
++                    {
++                        "xc": host_xc_identity,
++                        "density": density_identity,
++                        "topology": topology,
++                    }
++                ),
++                host_density_reads,
++                ("vxc_host", "totals_host", "error_host"),
++            ),
++            PlanCall(
++                "upload_xc",
++                "runtime.cuda.ks_xc_result_h2d",
++                canonical_hash(
++                    {
++                        "transfer": transfer_identity,
++                        "direction": "h2d",
++                        "bytes": density_bytes + _TOTAL_BYTES + _ERROR_BYTES,
++                        "topology": topology,
++                    }
++                ),
++                ("vxc_host", "totals_host", "error_host"),
++                ("vxc_device", "totals_device", "error_device"),
++            ),
++        )
++    )
++    return ProgramIR(
++        "cuda_ks_host_unfused_xc",
++        tuple(buffers),
++        ("density_device",),
++        tuple(calls),
++        ("vxc_device", "totals_device", "error_device"),
++    )
++
++
++def native_ks_xc_region(program: ProgramIR) -> ProgramRegion:
++    """Return the exact `stage_xc` region replaceable by resident device XC."""
++
++    return derive_program_region(
++        program,
++        name="cuda-ks-stage-xc",
++        start_call="download_density",
++        end_call="upload_xc",
++        effects=_HOST_REGION_EFFECTS,
++    )
++
++
++def _schedule_name(assessment: GridXcCandidateAssessment) -> str:
++    if not isinstance(assessment, GridXcCandidateAssessment):
++        raise TypeError("grid/XC region binding requires candidate assessments")
++    provenance = dict(assessment.schedule_contract.provenance)
++    name = provenance.get("domain_schedule")
++    if name not in ("host_unfused", "device_fused"):
++        raise ValueError("grid/XC assessment has an unknown execution schedule")
++    if assessment.legal != assessment.schedule_contract.legal:
++        raise ValueError("grid/XC assessment legality disagrees with ScheduleContract")
++    return name
++
++
++def _endpoint_seconds(
++    measurements: collections.abc.Mapping[str, float | None] | None,
++    name: str,
++) -> float | None:
++    if measurements is None or name not in measurements:
++        return None
++    value = measurements[name]
++    if value is None:
++        return None
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise TypeError("grid/XC endpoint timing must be a positive finite number")
++    numeric = float(value)
++    if not math.isfinite(numeric) or numeric <= 0.0:
++        raise ValueError("grid/XC endpoint timing must be a positive finite number")
++    return numeric
++
++
++def _host_region_resources(program: ProgramIR) -> ScheduleResources:
++    """Project only ProgramIR-visible bridge storage, not the prepared KS arena."""
++
++    peaks = program.storage_analysis().peak_by_space
++    host_bytes = peaks.get("pageable", 0) + peaks.get("pinned", 0)
++    device_bytes = sum(
++        value for space, value in peaks.items() if space.startswith("device:")
++    )
++    return ScheduleResources(
++        host_bytes=host_bytes,
++        device_bytes=device_bytes,
++    )
++
++
++def _host_bridge_traffic(program: ProgramIR) -> int:
++    """Exact transfer payload from `stage_xc`, excluding CPU-internal traffic."""
++
++    buffers = {buffer.name: buffer for buffer in program.buffers}
++    return (
++        buffers["density_host"].bytes
++        + buffers["vxc_host"].bytes
++        + buffers["totals_host"].bytes
++        + buffers["error_host"].bytes
++    )
++
++
++def _region_schedule(
++    assessment: GridXcCandidateAssessment,
++    region: ProgramRegion,
++    *,
++    endpoint_seconds: float | None,
++    resources: ScheduleResources | None = None,
++    semantic_traffic_bytes: int | None = None,
++) -> ScheduleContract:
++    contract = assessment.schedule_contract
++    provenance = dict(contract.provenance)
++    provenance["program_region"] = region.identity
++    provenance["region_source_consumer"] = contract.consumer
++    profitability = replace(
++        contract.profitability,
++        endpoint_seconds=endpoint_seconds,
++        **(
++            {}
++            if semantic_traffic_bytes is None
++            else {"semantic_traffic_bytes": semantic_traffic_bytes}
++        ),
++    )
++    return replace(
++        contract,
++        consumer=region.consumer,
++        resources=contract.resources if resources is None else resources,
++        profitability=profitability,
++        provenance=tuple(provenance.items()),
++    )
++
++
++@dataclass(frozen=True, slots=True)
++class GridXcRegionCandidates:
++    """Host bridge and resident-device implementations of one native KS region."""
++
++    region: ProgramRegion
++    host_unfused: ProgramRegionCandidate
++    device_fused: ProgramRegionCandidate
++
++    def __post_init__(self) -> None:
++        if self.host_unfused.region != self.region:
++            raise ValueError("host grid/XC candidate is bound to another region")
++        if self.device_fused.region != self.region:
++            raise ValueError("device grid/XC candidate is bound to another region")
++
++    @property
++    def all(self) -> tuple[ProgramRegionCandidate, ProgramRegionCandidate]:
++        return self.host_unfused, self.device_fused
++
++
++def bind_native_ks_xc_region_candidates(
++    program: ProgramIR,
++    *,
++    host_unfused: GridXcCandidateAssessment,
++    device_fused: GridXcCandidateAssessment,
++    device_xc_identity: str,
++    endpoint_seconds: collections.abc.Mapping[str, float | None] | None = None,
++) -> GridXcRegionCandidates:
++    """Bind existing DFT schedule evidence to one exact native KS XC region."""
++
++    device_xc_identity = _text(device_xc_identity, "device XC executable identity")
++    if _schedule_name(host_unfused) != "host_unfused":
++        raise ValueError("host grid/XC assessment is not host_unfused")
++    if _schedule_name(device_fused) != "device_fused":
++        raise ValueError("device grid/XC assessment is not device_fused")
++    if not host_unfused.schedule_contract.fallback:
++        raise ValueError("host_unfused must remain the grid/XC fallback")
++    if device_fused.schedule_contract.fallback:
++        raise ValueError("device_fused must not be marked as fallback")
++    if not host_unfused.legal:
++        raise ValueError("host_unfused fallback must be legal")
++
++    region = native_ks_xc_region(program)
++    host_schedule = _region_schedule(
++        host_unfused,
++        region,
++        endpoint_seconds=_endpoint_seconds(endpoint_seconds, "host_unfused"),
++        resources=_host_region_resources(program),
++        semantic_traffic_bytes=_host_bridge_traffic(program),
++    )
++    device_schedule = _region_schedule(
++        device_fused,
++        region,
++        endpoint_seconds=_endpoint_seconds(endpoint_seconds, "device_fused"),
++    )
++    host_candidate = ProgramRegionCandidate(
++        name="host_unfused",
++        region=region,
++        schedule=host_schedule,
++        backend="cuda+host",
++    )
++    device_candidate = ProgramRegionCandidate(
++        name="device_fused",
++        region=region,
++        schedule=device_schedule,
++        backend="cuda",
++        provider="dft.CudaXcPlan.device_fused",
++        implementation_identity=device_xc_identity,
++    )
++    return GridXcRegionCandidates(region, host_candidate, device_candidate)
++
++
++@dataclass(frozen=True, slots=True)
++class GridXcRegionSelection:
++    """Selected executable candidate plus the resulting ProgramIR."""
++
++    candidate: ProgramRegionCandidate
++    program: ProgramIR
++
++
++def select_native_ks_xc_region_program(
++    program: ProgramIR,
++    *,
++    host_unfused: GridXcCandidateAssessment,
++    device_fused: GridXcCandidateAssessment,
++    device_xc_identity: str,
++    endpoint_seconds: collections.abc.Mapping[str, float | None] | None = None,
++    minimum_speedup: float = 1.0,
++    endpoint_noise_fraction: float = 0.01,
++) -> GridXcRegionSelection:
++    """Select and materialize one measured native-KS XC implementation."""
++
++    candidates = bind_native_ks_xc_region_candidates(
++        program,
++        host_unfused=host_unfused,
++        device_fused=device_fused,
++        device_xc_identity=device_xc_identity,
++        endpoint_seconds=endpoint_seconds,
++    )
++    selected = select_program_region_candidate(
++        candidates.all,
++        minimum_speedup=minimum_speedup,
++        endpoint_noise_fraction=endpoint_noise_fraction,
++    )
++    return GridXcRegionSelection(
++        selected,
++        apply_program_region_candidate(program, selected),
++    )
+diff --git a/tests/python/test_dft_xc_program_region.py b/tests/python/test_dft_xc_program_region.py
+new file mode 100644
+index 00000000..8b77a9ef
+--- /dev/null
++++ b/tests/python/test_dft_xc_program_region.py
+@@ -0,0 +1,304 @@
++"""ProgramIR binding for the real native CUDA-KS XC staging routes."""
++
++from __future__ import annotations
++
++import typing
++from dataclasses import replace
++
++import pytest
++from vibeqc_compiler.dft.xc_program import (
++    bind_native_ks_xc_region_candidates,
++    native_ks_host_unfused_xc_program,
++    native_ks_xc_region,
++    select_native_ks_xc_region_program,
++)
++from vibeqc_compiler.dft.xc_schedule import (
++    DEVICE_FUSED,
++    HOST_UNFUSED,
++    GridXcCandidateLimits,
++    GridXcCandidateShape,
++    assess_grid_xc_schedule,
++)
++
++if typing.TYPE_CHECKING:
++    from vibeqc_compiler.common.program import ProgramIR
++    from vibeqc_compiler.dft.xc_schedule import (
++        GridXcCandidateAssessment,
++        GridXcExecutionSchedule,
++    )
++
++
++def _shape(*, spins: int = 2) -> GridXcCandidateShape:
++    return GridXcCandidateShape(
++        npoint=48,
++        tile_points=16,
++        nao=7,
++        max_active_ao=7,
++        spins=spins,
++        jet_components=4,
++        device_workspace_bytes=1 << 20,
++        generated_source_bytes=8192,
++    )
++
++
++def _limits() -> GridXcCandidateLimits:
++    return GridXcCandidateLimits(
++        device_bytes=1 << 30,
++        live_values=1 << 28,
++        source_bytes=1 << 20,
++    )
++
++
++def _assessment(
++    schedule: GridXcExecutionSchedule,
++    *,
++    device_xc_available: bool = True,
++    spins: int = 2,
++) -> GridXcCandidateAssessment:
++    return assess_grid_xc_schedule(
++        schedule,
++        _shape(spins=spins),
++        _limits(),
++        device_xc_available=device_xc_available,
++        observable="potential",
++        functional="PBE",
++    )
++
++
++def _program(*, spins: int = 2) -> ProgramIR:
++    return native_ks_host_unfused_xc_program(
++        _shape(spins=spins),
++        density_identity="cuda-ks-density-v1",
++        host_xc_identity="host-pbe-v1",
++        transfer_identity="cuda-ks-xc-transfer-v1",
++    )
++
++
++def test_host_unfused_uks_program_matches_cuda_ks_stage_xc_boundary() -> None:
++    program = _program(spins=2)
++    assert tuple(call.name for call in program.calls) == (
++        "download_density",
++        "split_spin_density",
++        "host_xc_vxc",
++        "upload_xc",
++    )
++    assert tuple(call.provider for call in program.calls) == (
++        "runtime.cuda.ks_xc_density_d2h",
++        "dft.CudaKsPlan.split_host_spin_density",
++        "dft.CudaKsPlan.host_unfused_xc",
++        "runtime.cuda.ks_xc_result_h2d",
++    )
++    buffers = {buffer.name: buffer for buffer in program.buffers}
++    matrix_bytes = 8 * 7 * 7
++    density_bytes = 2 * matrix_bytes
++    assert buffers["density_device"].bytes == 0
++    assert buffers["density_host"].bytes == density_bytes
++    assert buffers["alpha_host"].bytes == matrix_bytes
++    assert buffers["beta_host"].bytes == matrix_bytes
++    assert buffers["vxc_host"].bytes == density_bytes
++    assert buffers["totals_host"].bytes == 24
++    assert buffers["error_host"].bytes == 4
++    assert buffers["density_device"].space == "device:0"
++    assert buffers["density_host"].space == "pageable"
++    assert program.outputs == ("vxc_device", "totals_device", "error_device")
++
++
++def test_host_unfused_rks_has_no_artificial_spin_split() -> None:
++    program = _program(spins=1)
++    assert tuple(call.name for call in program.calls) == (
++        "download_density",
++        "host_xc_vxc",
++        "upload_xc",
++    )
++    assert "alpha_host" not in {buffer.name for buffer in program.buffers}
++    assert "beta_host" not in {buffer.name for buffer in program.buffers}
++    assert program.calls[1].reads == ("density_host",)
++
++
++def test_native_ks_region_exposes_density_to_xc_view_boundary() -> None:
++    region = native_ks_xc_region(_program())
++    assert region.reads == ("density_device",)
++    assert region.writes == ("vxc_device", "totals_device", "error_device")
++    assert region.internal_buffers == (
++        "density_host",
++        "alpha_host",
++        "beta_host",
++        "vxc_host",
++        "totals_host",
++        "error_host",
++    )
++
++
++def test_host_region_cost_counts_exact_cuda_ks_bridge_payload() -> None:
++    program = _program()
++    candidates = bind_native_ks_xc_region_candidates(
++        program,
++        host_unfused=_assessment(HOST_UNFUSED),
++        device_fused=_assessment(DEVICE_FUSED),
++        device_xc_identity="cuda-xc-plan-pbe-v1",
++    )
++    buffers = {buffer.name: buffer.bytes for buffer in program.buffers}
++    expected = (
++        buffers["density_host"]
++        + buffers["vxc_host"]
++        + buffers["totals_host"]
++        + buffers["error_host"]
++    )
++    profitability = candidates.host_unfused.schedule.profitability
++    assert profitability.semantic_traffic_bytes == expected
++    assert expected == 2 * (2 * 7 * 7 * 8) + 24 + 4
++    assert candidates.host_unfused.schedule.resources.host_bytes == expected
++
++
++def test_measured_device_fused_route_replaces_complete_host_region() -> None:
++    program = _program()
++    selected = select_native_ks_xc_region_program(
++        program,
++        host_unfused=_assessment(HOST_UNFUSED),
++        device_fused=_assessment(DEVICE_FUSED),
++        device_xc_identity="cuda-xc-plan-pbe-v1",
++        endpoint_seconds={
++            "host_unfused": 1.0,
++            "device_fused": 0.75,
++        },
++        minimum_speedup=1.02,
++    )
++    assert selected.candidate.name == "device_fused"
++    assert selected.candidate.provider == "dft.CudaXcPlan.device_fused"
++    assert selected.candidate.backend == "cuda"
++    assert tuple(call.name for call in selected.program.calls) == ("device_fused",)
++    assert selected.program.calls[0].reads == ("density_device",)
++    assert selected.program.calls[0].writes == (
++        "vxc_device",
++        "totals_device",
++        "error_device",
++    )
++    assert tuple(buffer.name for buffer in selected.program.buffers) == (
++        "density_device",
++        "vxc_device",
++        "totals_device",
++        "error_device",
++    )
++    provenance = dict(selected.candidate.schedule.provenance)
++    assert provenance["region_source_consumer"] == "dft.grid_xc"
++    assert provenance["domain_schedule"] == "device_fused"
++
++
++def test_missing_endpoint_evidence_keeps_exact_host_fallback() -> None:
++    program = _program()
++    selected = select_native_ks_xc_region_program(
++        program,
++        host_unfused=_assessment(HOST_UNFUSED),
++        device_fused=_assessment(DEVICE_FUSED),
++        device_xc_identity="cuda-xc-plan-pbe-v1",
++        endpoint_seconds=None,
++        minimum_speedup=1.02,
++    )
++    assert selected.candidate.name == "host_unfused"
++    assert selected.program is program
++
++
++def test_unavailable_device_xc_cannot_be_promoted_by_fast_timing() -> None:
++    program = _program()
++    selected = select_native_ks_xc_region_program(
++        program,
++        host_unfused=_assessment(HOST_UNFUSED),
++        device_fused=_assessment(DEVICE_FUSED, device_xc_available=False),
++        device_xc_identity="cuda-xc-plan-pbe-v1",
++        endpoint_seconds={
++            "host_unfused": 1.0,
++            "device_fused": 0.1,
++        },
++        minimum_speedup=1.02,
++    )
++    assert selected.candidate.name == "host_unfused"
++    assert selected.program is program
++
++
++def test_device_executable_identity_invalidates_replacement_program() -> None:
++    program = _program()
++    kwargs = {
++        "program": program,
++        "host_unfused": _assessment(HOST_UNFUSED),
++        "device_fused": _assessment(DEVICE_FUSED),
++        "endpoint_seconds": {
++            "host_unfused": 1.0,
++            "device_fused": 0.75,
++        },
++        "minimum_speedup": 1.02,
++    }
++    first = select_native_ks_xc_region_program(
++        device_xc_identity="cuda-xc-plan-pbe-v1",
++        **kwargs,
++    )
++    second = select_native_ks_xc_region_program(
++        device_xc_identity="cuda-xc-plan-pbe-v2",
++        **kwargs,
++    )
++    assert first.program.identity != second.program.identity
++    assert first.candidate.replacement_identity != second.candidate.replacement_identity
++
++
++@pytest.mark.parametrize(
++    "timing",
++    [
++        {"host_unfused": 0.0, "device_fused": 0.5},
++        {"host_unfused": 1.0, "device_fused": -1.0},
++        {"host_unfused": 1.0, "device_fused": float("inf")},
++        {"host_unfused": 1.0, "device_fused": True},
++    ],
++)
++def test_region_binding_rejects_invalid_endpoint_timing(
++    timing: typing.Any,
++) -> None:
++    with pytest.raises((TypeError, ValueError), match="endpoint timing"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            host_unfused=_assessment(HOST_UNFUSED),
++            device_fused=_assessment(DEVICE_FUSED),
++            device_xc_identity="cuda-xc-plan-pbe-v1",
++            endpoint_seconds=timing,
++        )
++
++
++def test_region_binding_rejects_swapped_schedule_assessments() -> None:
++    with pytest.raises(ValueError, match="host_unfused"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            host_unfused=_assessment(DEVICE_FUSED),
++            device_fused=_assessment(HOST_UNFUSED),
++            device_xc_identity="cuda-xc-plan-pbe-v1",
++        )
++
++
++def test_region_binding_rejects_inconsistent_assessment_legality() -> None:
++    device = _assessment(DEVICE_FUSED)
++    inconsistent = replace(device, legal=False)
++    with pytest.raises(ValueError, match="legality disagrees"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            host_unfused=_assessment(HOST_UNFUSED),
++            device_fused=inconsistent,
++            device_xc_identity="cuda-xc-plan-pbe-v1",
++        )
++
++
++def test_host_fallback_must_remain_legal() -> None:
++    host = _assessment(HOST_UNFUSED)
++    illegal_host = replace(
++        host,
++        legal=False,
++        reasons=("forced test rejection",),
++        schedule_contract=replace(
++            host.schedule_contract,
++            legal=False,
++            reasons=("forced test rejection",),
++        ),
++    )
++    with pytest.raises(ValueError, match="fallback must be legal"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            host_unfused=illegal_host,
++            device_fused=_assessment(DEVICE_FUSED),
++            device_xc_identity="cuda-xc-plan-pbe-v1",
++        )
+diff --git a/tests/python/test_program_ir_region.py b/tests/python/test_program_ir_region.py
+new file mode 100644
+index 00000000..ff3b8fd3
+--- /dev/null
++++ b/tests/python/test_program_ir_region.py
+@@ -0,0 +1,274 @@
++"""Whole-region ProgramIR fusion/backend-selection contracts."""
++
++from __future__ import annotations
++
++from dataclasses import replace
++
++import pytest
++from vibeqc_compiler.common.gpu_profitability import GpuProfitability
++from vibeqc_compiler.common.liveness import EffectKind
++from vibeqc_compiler.common.program import PlanCall, ProgramBuffer, ProgramIR
++from vibeqc_compiler.common.program_region import (
++    ProgramRegion,
++    ProgramRegionCandidate,
++    apply_program_region_candidate,
++    derive_program_region,
++    select_program_region_candidate,
++)
++from vibeqc_compiler.common.provenance import canonical_hash
++from vibeqc_compiler.common.schedule import (
++    ScheduleContract,
++    ScheduleResources,
++    ScheduleTopology,
++)
++from vibeqc_compiler.xc import functional
++from vibeqc_compiler.xc.contractions import ContractionProgram
++from vibeqc_compiler.xc.program_ir import fixed_density_tile_program
++
++
++def _program() -> ProgramIR:
++    return ProgramIR(
++        "region-test",
++        (
++            ProgramBuffer("x", 8),
++            ProgramBuffer("a", 8),
++            ProgramBuffer("b", 8),
++            ProgramBuffer("out", 8),
++        ),
++        ("x",),
++        (
++            PlanCall("a", "provider.a", "a-v1", ("x",), ("a",)),
++            PlanCall("b", "provider.b", "b-v1", ("a",), ("b",)),
++            PlanCall("finish", "provider.finish", "finish-v1", ("b",), ("out",)),
++        ),
++        ("out",),
++    )
++
++
++def _region(program: ProgramIR | None = None) -> ProgramRegion:
++    if program is None:
++        program = _program()
++    return derive_program_region(
++        program,
++        name="ab",
++        start_call="a",
++        end_call="b",
++        effects={
++            "provider.a": EffectKind.PURE,
++            "provider.b": EffectKind.PURE,
++        },
++    )
++
++
++def _candidate(
++    region: ProgramRegion,
++    name: str,
++    seconds: float | None,
++    *,
++    fallback: bool = False,
++    legal: bool = True,
++) -> ProgramRegionCandidate:
++    schedule = ScheduleContract(
++        consumer=region.consumer,
++        schedule_hash=canonical_hash(
++            {
++                "region": region.identity,
++                "route": name,
++            }
++        ),
++        workload_hash="1" * 64,
++        profile_key="2" * 64,
++        target_hash="3" * 64,
++        precision_schedule_hash="4" * 64,
++        fallback=fallback,
++        legal=legal,
++        reasons=() if legal else ("backend is not qualified",),
++        topology=ScheduleTopology(
++            fusion="unfused" if fallback else "whole-region",
++            materialization="materialize" if fallback else "fused",
++            residency="device",
++        ),
++        resources=ScheduleResources(),
++        profitability=GpuProfitability(endpoint_seconds=seconds),
++        provenance=(("route", name),),
++    )
++    return ProgramRegionCandidate(
++        name=name,
++        region=region,
++        schedule=schedule,
++        backend="original" if fallback else "generated-cuda",
++        provider=None if fallback else "compiler.fused",
++        implementation_identity=None if fallback else f"{name}-artifact-v1",
++    )
++
++
++def test_region_derives_boundary_and_eliminates_internal_materialization() -> None:
++    program = _program()
++    region = _region(program)
++    assert region.call_names == ("a", "b")
++    assert region.reads == ("x",)
++    assert region.writes == ("b",)
++    assert region.internal_buffers == ("a",)
++    assert region.consumer.startswith("program-region:")
++
++    candidate = _candidate(region, "fused_ab", 0.7)
++    fused = apply_program_region_candidate(program, candidate)
++    assert tuple(call.name for call in fused.calls) == ("fused_ab", "finish")
++    assert fused.calls[0].provider == "compiler.fused"
++    assert fused.calls[0].reads == ("x",)
++    assert fused.calls[0].writes == ("b",)
++    assert tuple(buffer.name for buffer in fused.buffers) == ("x", "b", "out")
++    assert fused.identity != program.identity
++
++
++def test_fallback_preserves_exact_original_program() -> None:
++    program = _program()
++    candidate = _candidate(_region(program), "original", 1.0, fallback=True)
++    assert apply_program_region_candidate(program, candidate) is program
++
++
++def test_region_requires_explicit_purity_and_contiguous_multi_call_scope() -> None:
++    program = _program()
++    with pytest.raises(ValueError, match="not proven pure"):
++        derive_program_region(
++            program,
++            name="ab",
++            start_call="a",
++            end_call="b",
++            effects={"provider.a": EffectKind.PURE},
++        )
++    with pytest.raises(ValueError, match="not proven pure"):
++        derive_program_region(
++            program,
++            name="ab",
++            start_call="a",
++            end_call="b",
++            effects={
++                "provider.a": EffectKind.PURE,
++                "provider.b": EffectKind.EFFECTFUL,
++            },
++        )
++    with pytest.raises(ValueError, match="at least two"):
++        derive_program_region(
++            program,
++            name="a",
++            start_call="a",
++            end_call="a",
++            effects={"provider.a": EffectKind.PURE},
++        )
++
++
++def test_region_candidate_rejects_stale_or_illegal_application() -> None:
++    program = _program()
++    region = _region(program)
++    candidate = _candidate(region, "fused_ab", 0.7)
++    with pytest.raises(ValueError, match="stale"):
++        apply_program_region_candidate(replace(program, name="changed"), candidate)
++
++    illegal = _candidate(region, "unqualified", 0.5, legal=False)
++    with pytest.raises(ValueError, match="illegal"):
++        apply_program_region_candidate(program, illegal)
++
++
++def test_measured_region_selection_reuses_shared_promotion_policy() -> None:
++    region = _region()
++    fallback = _candidate(region, "original", 1.0, fallback=True)
++    faster = _candidate(region, "generated", 0.75)
++    assert (
++        select_program_region_candidate(
++            (fallback, faster),
++            minimum_speedup=1.02,
++        )
++        is faster
++    )
++
++    unmeasured = _candidate(region, "unmeasured", None)
++    assert (
++        select_program_region_candidate(
++            (fallback, unmeasured),
++            minimum_speedup=1.02,
++        )
++        is fallback
++    )
++
++
++def _pbe_program() -> ProgramIR:
++    contract = ContractionProgram(functional("PBE", spin="polarized")).contract
++    return fixed_density_tile_program(
++        contract,
++        nao=12,
++        tile_points=7,
++        basis_bytes=100,
++        grid_bytes=1000,
++        basis_identity="basis-v1",
++        native_identity="native-v1",
++        packed_features=True,
++    )
++
++
++def test_real_pbe_program_exposes_one_cross_subsystem_fusion_boundary() -> None:
++    """Planning can collapse features -> scalar XC -> Vxc without changing science."""
++
++    program = _pbe_program()
++    region = derive_program_region(
++        program,
++        name="pbe-fixed-density",
++        start_call="features",
++        end_call="vxc",
++        effects={
++            "dft.density_feature_block": EffectKind.PURE,
++            "xc.NativeContractionProgram.scalar_values_packed": EffectKind.PURE,
++            "xc.NativeContractionProgram.potential_from_rows": EffectKind.PURE,
++        },
++    )
++    assert region.reads == ("jets", "density", "quadrature")
++    assert region.writes == ("contribution",)
++    assert region.internal_buffers == (
++        "feature_scalar",
++        "feature_gradient",
++        "xc_rows",
++        "coefficients",
++    )
++
++    candidate = _candidate(region, "fused_pbe", 0.8)
++    fused = apply_program_region_candidate(program, candidate)
++    assert tuple(call.name for call in fused.calls) == (
++        "collocation",
++        "fused_pbe",
++    )
++    assert tuple(buffer.name for buffer in fused.buffers) == (
++        "basis",
++        "density",
++        "quadrature",
++        "jets",
++        "contribution",
++    )
++    assert fused.calls[-1].reads == ("jets", "density", "quadrature")
++    assert fused.calls[-1].writes == ("contribution",)
++
++
++def test_region_schedule_identity_participates_in_replacement_identity() -> None:
++    region = _region()
++    first = _candidate(region, "generated", 0.75)
++    second = _candidate(region, "generated-v2", 0.75)
++    assert first.replacement_identity != second.replacement_identity
++
++
++def test_region_selection_rejects_mixed_regions_and_duplicate_names() -> None:
++    first_region = _region()
++    changed = replace(_program(), name="other")
++    second_region = _region(changed)
++    first = _candidate(first_region, "original", 1.0, fallback=True)
++    second = _candidate(second_region, "generated", 0.7)
++    with pytest.raises(ValueError, match="one region"):
++        select_program_region_candidate(
++            (first, second),
++            minimum_speedup=1.02,
++        )
++
++    duplicate = _candidate(first_region, "original", 0.7)
++    with pytest.raises(ValueError, match="duplicate.*candidate name"):
++        select_program_region_candidate(
++            (first, duplicate),
++            minimum_speedup=1.02,
++        )
+diff --git a/tests/python/test_program_region_boundary_validation.py b/tests/python/test_program_region_boundary_validation.py
+new file mode 100644
+index 00000000..2be09b8d
+--- /dev/null
++++ b/tests/python/test_program_region_boundary_validation.py
+@@ -0,0 +1,114 @@
++"""Reconstructed region descriptors must not change the source dataflow ABI."""
++
++from __future__ import annotations
++
++from dataclasses import replace
++
++import pytest
++from vibeqc_compiler.common.gpu_profitability import GpuProfitability
++from vibeqc_compiler.common.liveness import EffectKind
++from vibeqc_compiler.common.program import PlanCall, ProgramBuffer, ProgramIR
++from vibeqc_compiler.common.program_region import (
++    ProgramRegion,
++    ProgramRegionCandidate,
++    apply_program_region_candidate,
++    derive_program_region,
++)
++from vibeqc_compiler.common.provenance import canonical_hash
++from vibeqc_compiler.common.schedule import (
++    ScheduleContract,
++    ScheduleResources,
++    ScheduleTopology,
++)
++
++
++def _program() -> ProgramIR:
++    return ProgramIR(
++        "boundary-validation",
++        tuple(ProgramBuffer(name, 8) for name in ("x", "y", "a", "b", "c", "out")),
++        ("x", "y"),
++        (
++            PlanCall("first", "provider.first", "first-v1", ("x",), ("a",)),
++            PlanCall("second", "provider.second", "second-v1", ("a",), ("b", "c")),
++            PlanCall("finish", "provider.finish", "finish-v1", ("b", "c"), ("out",)),
++        ),
++        ("out",),
++    )
++
++
++def _region(program: ProgramIR) -> ProgramRegion:
++    return derive_program_region(
++        program,
++        name="first-second",
++        start_call="first",
++        end_call="second",
++        effects={
++            "provider.first": EffectKind.PURE,
++            "provider.second": EffectKind.PURE,
++        },
++    )
++
++
++def _candidate(
++    region: ProgramRegion, *, fallback: bool = False
++) -> ProgramRegionCandidate:
++    return ProgramRegionCandidate(
++        name="original" if fallback else "fused",
++        region=region,
++        backend="original" if fallback else "cpu",
++        provider=None if fallback else "provider.fused",
++        implementation_identity=None if fallback else "fused-v1",
++        schedule=ScheduleContract(
++            consumer=region.consumer,
++            schedule_hash=canonical_hash(
++                {"region": region.identity, "fallback": fallback}
++            ),
++            workload_hash="1" * 64,
++            profile_key="2" * 64,
++            target_hash="3" * 64,
++            precision_schedule_hash="4" * 64,
++            fallback=fallback,
++            legal=True,
++            reasons=(),
++            topology=ScheduleTopology(),
++            resources=ScheduleResources(),
++            profitability=GpuProfitability(endpoint_seconds=1.0),
++        ),
++    )
++
++
++@pytest.mark.parametrize(
++    "mutation",
++    (
++        {"reads": ()},
++        {"reads": ("x", "y")},
++        {"writes": ("c", "b")},
++        {"writes": ("a", "b", "c"), "internal_buffers": ()},
++    ),
++    ids=("omitted-input", "extra-input", "reordered-outputs", "exposed-internal"),
++)
++def test_reconstructed_region_revalidates_exact_boundary(mutation: dict) -> None:
++    program = _program()
++    region = replace(_region(program), **mutation)
++    assert region.program_identity == program.identity
++    with pytest.raises(ValueError, match="boundary.*source graph"):
++        apply_program_region_candidate(program, _candidate(region))
++
++
++def test_derived_region_preserves_ordered_multiple_outputs() -> None:
++    program = _program()
++    region = _region(program)
++    fused = apply_program_region_candidate(program, _candidate(region))
++    assert fused.calls[0].reads == ("x",)
++    assert fused.calls[0].writes == ("b", "c")
++    assert tuple(buffer.name for buffer in fused.buffers) == (
++        "x", "y", "b", "c", "out"
++    )
++    assert fused.inputs == program.inputs
++    assert fused.outputs == program.outputs
++
++
++def test_fallback_retains_original_program_object() -> None:
++    program = _program()
++    candidate = _candidate(_region(program), fallback=True)
++    assert apply_program_region_candidate(program, candidate) is program
