@@ -1,0 +1,1207 @@
+diff --git a/cmake/VibeQCGeneratedSources.cmake b/cmake/VibeQCGeneratedSources.cmake
+index 6fbcb2d8..3b86f2a9 100644
+--- a/cmake/VibeQCGeneratedSources.cmake
++++ b/cmake/VibeQCGeneratedSources.cmake
+@@ -34,6 +34,45 @@ macro(vibeqc_register_host_generated_sources target)
+       COMMENT "Generating packaged stationary CPU s/p/d derivative inventory")
+   endif()
+ 
++  if(VIBEQC_ENABLE_STATIONARY_CPU_FORCE_AOT)
++    set(VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY
++        "${CMAKE_CURRENT_BINARY_DIR}/generated/wb97mv_rsh_cpu")
++    set(VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES)
++    foreach(_vibeqc_rsh_family IN ITEMS sr lr)
++      foreach(_a RANGE 0 1)
++        foreach(_b RANGE 0 1)
++          foreach(_c RANGE 0 1)
++            foreach(_d RANGE 0 1)
++              set(_vibeqc_rsh_shell "${_a}${_b}${_c}${_d}")
++              list(APPEND VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES
++                   "${VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY}/vibeqc_wb97mv_rsh_${_vibeqc_rsh_family}_${_vibeqc_rsh_shell}_0.cpp")
++              if(_vibeqc_rsh_shell STREQUAL "1111")
++                list(APPEND VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES
++                     "${VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY}/vibeqc_wb97mv_rsh_${_vibeqc_rsh_family}_1111_1.cpp")
++              endif()
++            endforeach()
++          endforeach()
++        endforeach()
++      endforeach()
++    endforeach()
++    vibeqc_register_generated_sources(
++      NAME vibeqc_wb97mv_rsh_cpu_aot_codegen
++      TARGET ${target}
++      ADD_TO_TARGET
++      GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_wb97mv_rsh_cpu_aot.py"
++      OUTPUTS ${VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES}
++      DEPENDS
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/rsh_cpu_aot.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_native.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/integral/weighted_eri_cuda.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/spec.py"
++        "${CMAKE_CURRENT_SOURCE_DIR}/python/vibeqc_compiler/method/_generated_libxc_methods.py"
++      ARGS --output-directory "${VIBEQC_WB97MV_RSH_CPU_AOT_DIRECTORY}"
++      COMPILE_OPTIONS "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-ffp-contract=off>"
++      COMMENT "Generating packaged WB97M-V CPU SR/LR derivative programs")
++  endif()
++
+   set(VIBEQC_QUADRATURE_HEADER
+       "${CMAKE_CURRENT_BINARY_DIR}/generated/generated_quadrature.cuh")
+   vibeqc_register_generated_sources(
+diff --git a/cmake/VibeQCSourceIdentity.json b/cmake/VibeQCSourceIdentity.json
+index bd7f3aaa..f69d8504 100644
+--- a/cmake/VibeQCSourceIdentity.json
++++ b/cmake/VibeQCSourceIdentity.json
+@@ -83,6 +83,7 @@
+     "tools/generate_scf_density_cuda.py",
+     "tools/generate_stationary_force_aot.py",
+     "tools/generate_stationary_cpu_derivative_aot.py",
++    "tools/generate_wb97mv_rsh_cpu_aot.py",
+     "tools/write_stationary_aot_manifest.py"
+   ]
+ }
+diff --git a/python/vibeqc/_stationary_cpu.py b/python/vibeqc/_stationary_cpu.py
+index 146ccb14..4f3c7a01 100644
+--- a/python/vibeqc/_stationary_cpu.py
++++ b/python/vibeqc/_stationary_cpu.py
+@@ -562,7 +562,13 @@ def complete_rks_gradient_diagnostic(
+ 
+     range_native = None
+     if plan.range_exchange_primitives:
+-        range_native = RangeExchangeExecutor(basis, cache, primitive_tile, compiler)
++        range_native = RangeExchangeExecutor(
++            basis,
++            cache,
++            primitive_tile,
++            compiler,
++            aot_library=state._source._library,
++        )
+         try:
+             for range_source in plan.range_exchange_sources:
+                 primitive = plan.range_exchange_primitive(range_source.name)
+@@ -595,6 +601,10 @@ def complete_rks_gradient_diagnostic(
+                         )
+                         np.add.at(components[range_source.name], owners, values)
+         finally:
++            work["range_exchange_packaged_aot_plans"] = range_native.packaged_aot_plans
++            work["range_exchange_runtime_compilations"] = (
++                range_native.runtime_compilations
++            )
+             range_native.close()
+     for a in range(natom):
+         for b in range(a):
+diff --git a/python/vibeqc/_stationary_rsh_cpu.py b/python/vibeqc/_stationary_rsh_cpu.py
+index 30972176..bc9d7b0c 100644
+--- a/python/vibeqc/_stationary_rsh_cpu.py
++++ b/python/vibeqc/_stationary_rsh_cpu.py
+@@ -8,11 +8,13 @@ from vibeqc_compiler.common.cpp_adapter import CppCompilerAdapter
+ from vibeqc_compiler.common.cuda_adapter import CudaCompilerAdapter
+ from vibeqc_compiler.integral.ir import four_center_eri_operator
+ from vibeqc_compiler.integral.range_separation import CoulombKernel
++from vibeqc_compiler.integral.rsh_cpu_aot import component_group, entry_prefix
+ from vibeqc_compiler.integral.shell_spec import cartesian_components
+ from vibeqc_compiler.integral.weighted_eri import build_weighted_eri_ir
+ from vibeqc_compiler.integral.weighted_eri_execute import (
+     PreparedWeightedEri,
+     compile_weighted_eri,
++    packaged_weighted_eri,
+ )
+ from vibeqc_compiler.method.spec import RangeSeparatedExchangePrimitive
+ 
+@@ -36,6 +38,7 @@ class RangeExchangeExecutor:
+         compiler: typing.Any,
+         *,
+         device_id: int = 0,
++        aot_library: typing.Any = None,
+     ) -> None:
+         if isinstance(compiler, CppCompilerAdapter):
+             backend = "cpu"
+@@ -68,8 +71,11 @@ class RangeExchangeExecutor:
+         self.compiler = compiler
+         self.backend = backend
+         self.device_id = device_id
++        self.aot_library = aot_library
+         self._plans: dict[tuple[typing.Any, ...], PreparedWeightedEri] = {}
+         self.records = 0
++        self.packaged_aot_plans = 0
++        self.runtime_compilations = 0
+ 
+     @staticmethod
+     def _kernel(primitive: typing.Any) -> CoulombKernel:
+@@ -115,18 +121,43 @@ class RangeExchangeExecutor:
+             )
+         )
+         radial = self._kernel(primitive)
+-        key = (radial.family.value, radial.omega, angular, component)
++        aot_selection = None
++        if self.backend == "cpu" and self.aot_library is not None:
++            group_index, selected = component_group(angular, component)
++            prefix = entry_prefix(radial, angular, group_index)
++            try:
++                getattr(self.aot_library, f"{prefix}_identity_v2")
++            except AttributeError:
++                pass
++            else:
++                aot_selection = (group_index, selected, prefix)
++        key = (
++            (radial.family.value, radial.omega, angular, "aot", aot_selection[0])
++            if aot_selection is not None
++            else (radial.family.value, radial.omega, angular, "jit", component)
++        )
+         plan = self._plans.get(key)
+         if plan is None:
+             integral = build_weighted_eri_ir(
+                 angular, operator=four_center_eri_operator(radial)
+             )
+-            artifact = compile_weighted_eri(
+-                integral,
+-                self.compiler,
+-                self.cache,
+-                component_indices=(component,),
+-            )
++            if aot_selection is not None:
++                _, selected, prefix = aot_selection
++                artifact = packaged_weighted_eri(
++                    integral,
++                    self.aot_library,
++                    component_indices=selected,
++                    entry_prefix=prefix,
++                )
++                self.packaged_aot_plans += 1
++            else:
++                artifact = compile_weighted_eri(
++                    integral,
++                    self.compiler,
++                    self.cache,
++                    component_indices=(component,),
++                )
++                self.runtime_compilations += 1
+             if artifact.backend != self.backend:
+                 raise ValueError("range exchange compiled backend identity mismatch")
+             plan = PreparedWeightedEri(
+diff --git a/python/vibeqc_compiler/integral/rsh_cpu_aot.py b/python/vibeqc_compiler/integral/rsh_cpu_aot.py
+new file mode 100644
+index 00000000..de990e21
+--- /dev/null
++++ b/python/vibeqc_compiler/integral/rsh_cpu_aot.py
+@@ -0,0 +1,109 @@
++"""Build-time AOT layout for bounded CPU range-exchange derivatives."""
++
++from __future__ import annotations
++
++from itertools import product
++
++from vibeqc_compiler.common.provenance import canonical_hash
++
++from .ir import four_center_eri_operator
++from .range_separation import CoulombKernel, CoulombKernelFamily
++from .shell_spec import ShellClassSpec
++from .weighted_eri import build_weighted_eri_ir, build_weighted_eri_kernel
++from .weighted_eri_native import emit_weighted_eri_runtime
++
++AOT_ANGULAR_DOMAIN = (0, 1)
++AOT_COMPONENT_CAPACITY = 64
++
++
++def component_groups(
++    angular: tuple[int, int, int, int],
++) -> tuple[tuple[int, ...], ...]:
++    """Partition one Cartesian s/p shell class into <=64-component programs."""
++
++    if (
++        not isinstance(angular, tuple)
++        or len(angular) != 4
++        or any(
++            type(value) is not int or value not in AOT_ANGULAR_DOMAIN
++            for value in angular
++        )
++    ):
++        raise ValueError("CPU RSH AOT supports four s/p angular orders")
++    spec = ShellClassSpec("".join("sp"[value] for value in angular), angular)
++    return tuple(
++        tuple(
++            range(
++                begin,
++                min(begin + AOT_COMPONENT_CAPACITY, spec.component_count),
++            )
++        )
++        for begin in range(0, spec.component_count, AOT_COMPONENT_CAPACITY)
++    )
++
++
++def component_group(
++    angular: tuple[int, int, int, int], component: int
++) -> tuple[int, tuple[int, ...]]:
++    groups = component_groups(angular)
++    if type(component) is not int or component < 0:
++        raise ValueError("CPU RSH AOT component must be nonnegative")
++    for index, group in enumerate(groups):
++        if component in group:
++            return index, group
++    raise ValueError("CPU RSH AOT component is outside the shell class")
++
++
++def entry_prefix(
++    radial: CoulombKernel,
++    angular: tuple[int, int, int, int],
++    group_index: int,
++) -> str:
++    """Return a deterministic C symbol prefix including exact radial identity."""
++
++    if not isinstance(radial, CoulombKernel) or radial.family not in (
++        CoulombKernelFamily.SHORT_RANGE,
++        CoulombKernelFamily.LONG_RANGE,
++    ):
++        raise ValueError("CPU RSH AOT requires short- or long-range Coulomb")
++    groups = component_groups(angular)
++    if type(group_index) is not int or not 0 <= group_index < len(groups):
++        raise ValueError("CPU RSH AOT group index is out of range")
++    radial_key = canonical_hash(radial.to_payload())[:12]
++    family = "sr" if radial.family == CoulombKernelFamily.SHORT_RANGE else "lr"
++    shell = "".join(str(value) for value in angular)
++    return f"vibeqc_rsh_cpu_{family}_{shell}_{group_index}_{radial_key}"
++
++
++def program_source(
++    radial: CoulombKernel,
++    angular: tuple[int, int, int, int],
++    group_index: int,
++) -> tuple[str, tuple[int, ...], str]:
++    """Emit one build-time weighted-ERI program and its runtime symbol prefix."""
++
++    groups = component_groups(angular)
++    if type(group_index) is not int or not 0 <= group_index < len(groups):
++        raise ValueError("CPU RSH AOT group index is out of range")
++    selected = groups[group_index]
++    integral = build_weighted_eri_ir(angular, operator=four_center_eri_operator(radial))
++    kernel = build_weighted_eri_kernel(integral, selected)
++    prefix = entry_prefix(radial, angular, group_index)
++    return (
++        emit_weighted_eri_runtime(kernel, backend="cpu", entry_prefix=prefix),
++        selected,
++        prefix,
++    )
++
++
++def inventory_size() -> int:
++    """Number of programs for one short/long radial pair over the s/p domain."""
++
++    per_family = sum(
++        len(component_groups((a, b, c, d)))
++        for a, b, c, d in product(AOT_ANGULAR_DOMAIN, repeat=4)
++    )
++    return 2 * per_family
++
++
++assert inventory_size() == 34
+diff --git a/python/vibeqc_compiler/integral/weighted_eri_execute.py b/python/vibeqc_compiler/integral/weighted_eri_execute.py
+index 901ded6d..2b2b8b65 100644
+--- a/python/vibeqc_compiler/integral/weighted_eri_execute.py
++++ b/python/vibeqc_compiler/integral/weighted_eri_execute.py
+@@ -19,6 +19,7 @@ import time
+ import typing
+ from contextlib import suppress
+ from dataclasses import asdict, dataclass, replace
++from functools import lru_cache
+ from pathlib import Path
+ 
+ import numpy as np
+@@ -80,6 +81,7 @@ class CompiledWeightedEri:
+     component_quantums: tuple[tuple[int, ...], ...]
+     backend: str
+     program_identity: str
++    entry_prefix: str = "vibeqc_weighted"
+ 
+     def validate(self) -> None:
+         """Check the mathematical/subset binding before loading a native library.
+@@ -119,6 +121,17 @@ class CompiledWeightedEri:
+         )
+         if quantums != self.component_quantums:
+             raise ValueError("weighted ERI component quantum metadata mismatch")
++        if (
++            type(self.entry_prefix) is not str
++            or not self.entry_prefix
++            or not self.entry_prefix.isascii()
++            or not (self.entry_prefix[0].isalpha() or self.entry_prefix[0] == "_")
++            or any(
++                not (character.isalnum() or character == "_")
++                for character in self.entry_prefix
++            )
++        ):
++            raise ValueError("weighted ERI entry prefix requires a C identifier")
+         identity = self.native.metadata["identity"]
+         if (
+             canonical_hash(identity) != self.native.metadata["key"]
+@@ -216,6 +229,99 @@ def compile_weighted_eri(
+     )
+ 
+ 
++def _library_stamp(path: Path) -> tuple[int, int, int, int, int]:
++    status = path.stat()
++    return (
++        status.st_dev,
++        status.st_ino,
++        status.st_size,
++        status.st_mtime_ns,
++        status.st_ctime_ns,
++    )
++
++
++@lru_cache(maxsize=8)
++def _packaged_library_hash_at(path: Path, stamp: tuple[int, int, int, int, int]) -> str:
++    if _library_stamp(path) != stamp:
++        raise ValueError("packaged weighted ERI library changed during verification")
++    digest = file_hash(path)
++    if _library_stamp(path) != stamp:
++        raise ValueError("packaged weighted ERI library changed during verification")
++    return digest
++
++
++def _packaged_library_hash(path: Path) -> str:
++    """Reuse a large-library digest only while its filesystem generation is stable."""
++    path = path.resolve()
++    stamp = _library_stamp(path)
++    digest = _packaged_library_hash_at(path, stamp)
++    if _library_stamp(path) != stamp:
++        raise ValueError("packaged weighted ERI library changed during verification")
++    return digest
++
++
++def _artifact_binary_hash(artifact: CompiledWeightedEri) -> str:
++    identity = artifact.native.metadata["identity"]
++    if (
++        artifact.backend == "cpu"
++        and identity.get("schema") == "vibeqc.weighted-packaged.v1"
++    ):
++        return _packaged_library_hash(Path(artifact.native.library))
++    # Standalone JIT cache artifacts keep their original per-preparation check.
++    return file_hash(artifact.native.library)
++
++
++def packaged_weighted_eri(
++    integral: IntegralIR,
++    library: typing.Any,
++    *,
++    component_indices: typing.Any,
++    entry_prefix: str,
++) -> CompiledWeightedEri:
++    """Bind one build-time CPU weighted-ERI program from an existing library."""
++
++    canonical = canonical_range_weighted_eri_ir(integral)
++    kernel = build_weighted_eri_kernel(canonical, component_indices)
++    path = Path(getattr(library, "_name", library)).resolve()
++    if not path.is_file():
++        raise FileNotFoundError(f"packaged weighted ERI library not found: {path}")
++    program_identity = weighted_eri_program_identity(kernel, "cpu")
++    identity = {
++        "schema": "vibeqc.weighted-packaged.v1",
++        "backend": "cpu",
++        "program": program_identity,
++        "entry_prefix": entry_prefix,
++    }
++    native = CudaArtifact(
++        path,
++        {
++            "identity": identity,
++            "key": canonical_hash(identity),
++            "binary_sha256": _packaged_library_hash(path),
++            "compile_seconds": 0.0,
++            "resources": [],
++        },
++    )
++    quantums = tuple(
++        tuple(
++            component.count(axis)
++            for component in kernel.spec.components[index]
++            for axis in "xyz"
++        )
++        for index in kernel.component_indices
++    )
++    return CompiledWeightedEri(
++        native,
++        integral,
++        canonical,
++        kernel.component_indices,
++        quantums,
++        "cpu",
++        program_identity,
++        entry_prefix,
++    )
++
++
+ @dataclass(frozen=True)
+ class WeightedEriExecution:
+     """Detached tile rows: value followed by four ordered xyz center derivatives."""
+@@ -344,21 +450,23 @@ class PreparedWeightedEri:
+             raise ValueError(
+                 self.resource_plan.diagnostic or "weighted ERI resource budget exceeded"
+             )
+-        if (
+-            file_hash(artifact.native.library)
+-            != artifact.native.metadata["binary_sha256"]
+-        ):
++        if _artifact_binary_hash(artifact) != artifact.native.metadata["binary_sha256"]:
+             raise ValueError("weighted ERI binary hash mismatch")
+         lib = self._library = ct.CDLL(str(artifact.native.library))
+-        lib.vibeqc_weighted_identity_v2.restype = ct.c_char_p
+-        if lib.vibeqc_weighted_identity_v2().decode() != artifact.program_identity:
++
++        def entry(name: str) -> typing.Any:
++            return getattr(lib, f"{artifact.entry_prefix}_{name}_v2")
++
++        identity_entry = entry("identity")
++        identity_entry.restype = ct.c_char_p
++        if identity_entry().decode() != artifact.program_identity:
+             raise ValueError("weighted ERI compiled program identity mismatch")
+-        lib.vibeqc_weighted_create_v2.argtypes = (
++        entry("create").argtypes = (
+             [ct.c_int] * 3
+             + [ct.c_size_t] * 3
+             + [ct.POINTER(ct.c_void_p), ct.c_char_p, ct.c_size_t]
+         )
+-        lib.vibeqc_weighted_run_v2.argtypes = [
++        entry("run").argtypes = [
+             ct.c_void_p,
+             ct.c_void_p,
+             ct.c_size_t,
+@@ -368,16 +476,16 @@ class PreparedWeightedEri:
+             ct.c_char_p,
+             ct.c_size_t,
+         ]
+-        lib.vibeqc_weighted_storage_v2.argtypes = [
++        entry("storage").argtypes = [
+             ct.c_void_p,
+             ct.POINTER(ct.c_uint64),
+             ct.c_char_p,
+             ct.c_size_t,
+         ]
+-        lib.vibeqc_weighted_destroy_v2.argtypes = [ct.c_void_p]
+-        lib.vibeqc_weighted_destroy_v2.restype = None
++        entry("destroy").argtypes = [ct.c_void_p]
++        entry("destroy").restype = None
+         if artifact.backend == "cuda":
+-            lib.vibeqc_weighted_metrics_v2.argtypes = [
++            entry("metrics").argtypes = [
+                 ct.c_void_p,
+                 ct.POINTER(_Metrics),
+                 ct.c_char_p,
+@@ -387,7 +495,11 @@ class PreparedWeightedEri:
+             (record_capacity, PRIMITIVE_RANGE_RECORD.size), dtype=np.uint8
+         )
+         self._chunk = np.empty((tile_capacity, 13), dtype=np.float64)
+-        target = artifact.native.metadata["identity"]["target"]
++        target = (
++            artifact.native.metadata["identity"]["target"]
++            if artifact.backend == "cuda"
++            else {}
++        )
+         major = target["compute_capability_major"] if artifact.backend == "cuda" else 0
+         minor = target["compute_capability_minor"] if artifact.backend == "cuda" else 0
+         try:
+@@ -436,7 +548,12 @@ class PreparedWeightedEri:
+ 
+     def _call(self, name: typing.Any, *args: typing.Any) -> None:
+         error = ct.create_string_buffer(1024)
+-        status = getattr(self._library, name)(*args, error, len(error))
++        mapped = (
++            f"{self.artifact.entry_prefix}_" + name.removeprefix("vibeqc_weighted_")
++            if name.startswith("vibeqc_weighted_")
++            else name
++        )
++        status = getattr(self._library, mapped)(*args, error, len(error))
+         if status:
+             exception = {
+                 1: ValueError,
+@@ -575,7 +692,10 @@ class PreparedWeightedEri:
+         """Release native resources once, with the shared allocation snapshot lock."""
+         with self._lock, _PREPARATION_LOCK:
+             if self._handle.value:
+-                self._library.vibeqc_weighted_destroy_v2(self._handle)
++                getattr(
++                    self._library,
++                    f"{self.artifact.entry_prefix}_destroy_v2",
++                )(self._handle)
+                 self._handle = ct.c_void_p()
+             self._records = self._chunk = None
+ 
+diff --git a/python/vibeqc_compiler/integral/weighted_eri_native.py b/python/vibeqc_compiler/integral/weighted_eri_native.py
+index 52b58d2b..33234ee3 100644
+--- a/python/vibeqc_compiler/integral/weighted_eri_native.py
++++ b/python/vibeqc_compiler/integral/weighted_eri_native.py
+@@ -102,7 +102,10 @@ def weighted_eri_metadata_identity(
+ 
+ 
+ def emit_weighted_eri_runtime(
+-    kernel: WeightedEriKernel, *, backend: typing.Any = "cuda"
++    kernel: WeightedEriKernel,
++    *,
++    backend: typing.Any = "cuda",
++    entry_prefix: str = "vibeqc_weighted",
+ ) -> str:
+     """Bind tagged weighted records to the shared bounded native runtime.
+ 
+@@ -112,6 +115,19 @@ def emit_weighted_eri_runtime(
+     Compilation/preparation do not authorize a performance-profile promotion.
+     """
+     identity = weighted_eri_program_identity(kernel, backend)
++    if (
++        type(entry_prefix) is not str
++        or not entry_prefix
++        or not entry_prefix.isascii()
++        or not (entry_prefix[0].isalpha() or entry_prefix[0] == "_")
++        or any(
++            not (character.isalnum() or character == "_") for character in entry_prefix
++        )
++    ):
++        raise ValueError("weighted ERI entry prefix requires a C identifier")
++    primitive_name = (
++        "weighted" if entry_prefix == "vibeqc_weighted" else f"{entry_prefix}_weighted"
++    )
+     if not kernel.integral.operator.range_separated:
+         raise ValueError("the v2 generated runtime requires an explicit range operator")
+     consumer = kernel.integral.contractions[0]
+@@ -138,8 +154,10 @@ def emit_weighted_eri_runtime(
+         )
+         codes[sum(power << (2 * i) for i, power in enumerate(powers))] = packed
+     source = emit_weighted_eri_primitive_header(
+-        ((kernel, "weighted"),), backend=backend
++        ((kernel, primitive_name),), backend=backend
+     )
++    if backend == "cpu" and entry_prefix != "vibeqc_weighted":
++        source += '#include "vibeqc/vibeqc.h"\n'
+     source += r"""
+ #include <cstdio>
+ #include <memory>
+@@ -194,7 +212,7 @@ struct Program {
+       weights[packed] = b.weights[0];
+     }
+     generated_weighted_eri::Gradient candidate{};
+-    if (!generated_weighted_eri::weighted_primitive(b.exponents, &b.centers[0][0], weights, candidate))
++    if (!generated_weighted_eri::@PRIMITIVE@_primitive(b.exponents, &b.centers[0][0], weights, candidate))
+       return false;
+     output.value = candidate.value;
+     for (unsigned c = 0; c < 4; ++c)
+@@ -238,8 +256,8 @@ template <class F> int boundary(F operation, char* detail, std::size_t size) {
+ }
+ }  // namespace
+ 
+-extern "C" const char* vibeqc_weighted_identity_v2() { return "@IDENTITY@"; }
+-extern "C" int vibeqc_weighted_create_v2(int device, int major, int minor,
++extern "C" @API@const char* @PREFIX@_identity_v2() { return "@IDENTITY@"; }
++extern "C" @API@int @PREFIX@_create_v2(int device, int major, int minor,
+     std::size_t capacity, std::size_t tiles, std::size_t budget, void** output,
+     char* detail, std::size_t size) {
+   if (output) *output = nullptr;
+@@ -249,15 +267,15 @@ extern "C" int vibeqc_weighted_create_v2(int device, int major, int minor,
+     *output = candidate.release();
+   }, detail, size);
+ }
+-extern "C" void vibeqc_weighted_destroy_v2(void* handle) { delete static_cast<NativePlan*>(handle); }
+-extern "C" int vibeqc_weighted_run_v2(void* handle, const Program::Record* records,
++extern "C" @API@void @PREFIX@_destroy_v2(void* handle) { delete static_cast<NativePlan*>(handle); }
++extern "C" @API@int @PREFIX@_run_v2(void* handle, const Program::Record* records,
+     std::size_t count, std::size_t tiles, Result* output, int profile, char* detail, std::size_t size) {
+   return boundary([&] {
+     if (!handle || (profile != 0 && profile != 1)) throw std::invalid_argument("invalid weighted ERI handle/profile");
+     static_cast<NativePlan*>(handle)->run(records, count, tiles, output, profile != 0);
+   }, detail, size);
+ }
+-extern "C" int vibeqc_weighted_storage_v2(void* handle, std::uint64_t* output,
++extern "C" @API@int @PREFIX@_storage_v2(void* handle, std::uint64_t* output,
+     char* detail, std::size_t size) {
+   return boundary([&] {
+     if (!handle || !output) throw std::invalid_argument("null weighted ERI storage argument");
+@@ -266,7 +284,7 @@ extern "C" int vibeqc_weighted_storage_v2(void* handle, std::uint64_t* output,
+   }, detail, size);
+ }
+ #ifdef __CUDACC__
+-extern "C" int vibeqc_weighted_metrics_v2(void* handle, vibeqc_tensor::Metrics* output,
++extern "C" @API@int @PREFIX@_metrics_v2(void* handle, vibeqc_tensor::Metrics* output,
+     char* detail, std::size_t size) {
+   return boundary([&] {
+     if (!handle || !output) throw std::invalid_argument("null weighted ERI metrics argument");
+@@ -284,6 +302,13 @@ extern "C" int vibeqc_weighted_metrics_v2(void* handle, vibeqc_tensor::Metrics*
+         "@PSSS@": "true" if kernel.spec.angular == (1, 0, 0, 0) else "false",
+         "@COUNT@": str(len(kernel.component_indices)),
+         "@IDENTITY@": identity,
++        "@PREFIX@": entry_prefix,
++        "@PRIMITIVE@": primitive_name,
++        "@API@": (
++            "VIBEQC_API "
++            if backend == "cpu" and entry_prefix != "vibeqc_weighted"
++            else ""
++        ),
+     }.items():
+         source = source.replace(marker, replacement)
+     return source
+diff --git a/tests/python/test_wb97mv_complete.py b/tests/python/test_wb97mv_complete.py
+index ec8e55bb..92419f61 100644
+--- a/tests/python/test_wb97mv_complete.py
++++ b/tests/python/test_wb97mv_complete.py
+@@ -43,6 +43,8 @@ def test_public_wb97mv_live_state_and_complete_gradient(
+                 "nonlocal_grid",
+                 "nonlocal_weight",
+             }
++            assert grad.work["range_exchange_runtime_compilations"] == 0
++            assert grad.work["range_exchange_packaged_aot_plans"] > 0
+             np.testing.assert_allclose(grad.gradient.sum(axis=0), 0, atol=2e-8)
+         finally:
+             state._source.close()
+diff --git a/tests/python/test_wb97mv_rsh_cpu_aot.py b/tests/python/test_wb97mv_rsh_cpu_aot.py
+new file mode 100644
+index 00000000..d3dd1208
+--- /dev/null
++++ b/tests/python/test_wb97mv_rsh_cpu_aot.py
+@@ -0,0 +1,314 @@
++"""WB97M-V CPU range-exchange derivatives load packaged weighted-ERI AOT."""
++
++from __future__ import annotations
++
++import ctypes as ct
++import os
++import shutil
++import typing
++from itertools import product
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++from vibeqc import _stationary_rsh_cpu as runtime
++from vibeqc_compiler.common.cpp_adapter import CppCompilerAdapter
++from vibeqc_compiler.integral.ir import four_center_eri_operator
++from vibeqc_compiler.integral.range_separation import CoulombKernel
++from vibeqc_compiler.integral.rsh_cpu_aot import (
++    AOT_ANGULAR_DOMAIN,
++    component_groups,
++    entry_prefix,
++    inventory_size,
++    program_source,
++)
++from vibeqc_compiler.integral.weighted_eri import (
++    build_weighted_eri_ir,
++    build_weighted_eri_kernel,
++)
++from vibeqc_compiler.integral.weighted_eri_native import emit_weighted_eri_runtime
++from vibeqc_compiler.method import resolve_method
++from vibeqc_compiler.method.spec import RangeSeparatedExchangePrimitive
++
++
++def _wb97mv_ranges() -> tuple[RangeSeparatedExchangePrimitive, ...]:
++    method = resolve_method("WB97M-V", spin="unpolarized")
++    return tuple(
++        primitive
++        for primitive in method.primitives
++        if type(primitive) is RangeSeparatedExchangePrimitive
++    )
++
++
++def _radial(primitive: RangeSeparatedExchangePrimitive) -> CoulombKernel:
++    return CoulombKernel(
++        {
++            "short-range": "short_range",
++            "long-range": "long_range",
++        }[primitive.operator],
++        float(primitive.omega),
++    )
++
++
++def _fake_s_basis() -> SimpleNamespace:
++    centers = np.array(
++        [
++            [0.13, -0.31, 0.24],
++            [-0.43, 0.27, 0.51],
++            [0.68, -0.14, -0.22],
++            [-0.21, 0.48, -0.63],
++        ]
++    )
++    primitives = np.array([[0.57, 0.83], [0.71, -0.19], [0.89, 0.67], [1.13, 0.42]])
++    aos = np.zeros((4, 16))
++    for index in range(4):
++        aos[index, :8] = (index, index, 1, 1, 0, 0, 0, 1)
++    return SimpleNamespace(
++        natom=4,
++        nao=4,
++        nprimitive=4,
++        shells=tuple(SimpleNamespace(angular_momentum=0) for _ in range(4)),
++        packed=np.concatenate((centers.ravel(), primitives.ravel(), aos.ravel())),
++    )
++
++
++def test_wb97mv_rsh_aot_inventory_is_bounded_and_complete() -> None:
++    assert inventory_size() == 34
++    assert len(_wb97mv_ranges()) == 2
++    count = 0
++    prefixes = set()
++    for primitive in _wb97mv_ranges():
++        radial = _radial(primitive)
++        for angular_value in product(AOT_ANGULAR_DOMAIN, repeat=4):
++            angular = tuple(angular_value)
++            groups = component_groups(angular)
++            assert len(groups) == (2 if angular == (1, 1, 1, 1) else 1)
++            assert all(1 <= len(group) <= 64 for group in groups)
++            for group_index, group in enumerate(groups):
++                source, selected, prefix = program_source(radial, angular, group_index)
++                assert selected == group
++                assert f"{prefix}_identity_v2" in source
++                assert f"{prefix}_create_v2" in source
++                assert "VIBEQC_API" in source
++                assert prefix not in prefixes
++                prefixes.add(prefix)
++                count += 1
++    assert count == 34
++
++
++def test_weighted_runtime_default_symbols_remain_compatible() -> None:
++    radial = CoulombKernel("short_range", 0.3)
++    integral = build_weighted_eri_ir(
++        (0, 0, 0, 0), operator=four_center_eri_operator(radial)
++    )
++    kernel = build_weighted_eri_kernel(integral, (0,))
++    source = emit_weighted_eri_runtime(kernel, backend="cpu")
++    assert "vibeqc_weighted_identity_v2" in source
++    assert "vibeqc_weighted_create_v2" in source
++    assert "VIBEQC_API" not in source
++
++
++def test_range_exchange_prefers_packaged_cpu_aot(
++    monkeypatch: pytest.MonkeyPatch,
++    tmp_path: Path,
++) -> None:
++    compiler_path = shutil.which("c++")
++    if compiler_path is None:
++        pytest.skip("native C++ compiler unavailable")
++    compiler = CppCompilerAdapter(Path(compiler_path))
++    primitive = next(
++        item for item in _wb97mv_ranges() if item.operator == "short-range"
++    )
++    radial = _radial(primitive)
++    prefix = entry_prefix(radial, (0, 0, 0, 0), 0)
++    library = type("Library", (), {})()
++    setattr(library, f"{prefix}_identity_v2", object())
++
++    packaged_calls = []
++
++    def packaged(
++        integral: typing.Any,
++        candidate_library: typing.Any,
++        *,
++        component_indices: typing.Any,
++        entry_prefix: str,
++    ) -> typing.Any:
++        packaged_calls.append((tuple(component_indices), entry_prefix))
++        return SimpleNamespace(backend="cpu")
++
++    def forbidden_compile(*args: typing.Any, **kwargs: typing.Any) -> None:
++        pytest.fail("packaged WB97M-V RSH path reached runtime compilation")
++
++    class FakePlan:
++        def __init__(self, artifact: typing.Any, **kwargs: typing.Any) -> None:
++            self.artifact = artifact
++
++        def raw(
++            self,
++            primitives: typing.Any,
++            centers: typing.Any,
++            component_indices: typing.Any,
++        ) -> typing.Any:
++            return SimpleNamespace(
++                values=np.zeros((1, 13)),
++                diagnostics={"records": 1},
++            )
++
++        def close(self) -> None:
++            pass
++
++    monkeypatch.setattr(runtime, "packaged_weighted_eri", packaged)
++    monkeypatch.setattr(runtime, "compile_weighted_eri", forbidden_compile)
++    monkeypatch.setattr(runtime, "PreparedWeightedEri", FakePlan)
++
++    executor = runtime.RangeExchangeExecutor(
++        _fake_s_basis(),
++        tmp_path,
++        8,
++        compiler,
++        aot_library=library,
++    )
++    try:
++        owners, values = executor.integral(primitive, (0, 1, 2, 3), 1.0)
++    finally:
++        executor.close()
++    assert owners == [0, 1, 2, 3]
++    np.testing.assert_array_equal(values, 0)
++    assert packaged_calls == [((0,), prefix)]
++    assert executor.packaged_aot_plans == 1
++    assert executor.runtime_compilations == 0
++
++
++def test_grouped_aot_reuses_one_prepared_plan(
++    monkeypatch: pytest.MonkeyPatch,
++    tmp_path: Path,
++) -> None:
++    compiler_path = shutil.which("c++")
++    if compiler_path is None:
++        pytest.skip("native C++ compiler unavailable")
++    compiler = CppCompilerAdapter(Path(compiler_path))
++    primitive = next(
++        item for item in _wb97mv_ranges() if item.operator == "short-range"
++    )
++    radial = _radial(primitive)
++    angular = (1, 1, 1, 1)
++    prefix = entry_prefix(radial, angular, 0)
++    library = type("Library", (), {})()
++    setattr(library, f"{prefix}_identity_v2", object())
++
++    centers = np.asarray(
++        [
++            [0.13, -0.31, 0.24],
++            [-0.43, 0.27, 0.51],
++            [0.68, -0.14, -0.22],
++            [-0.21, 0.48, -0.63],
++        ]
++    )
++    primitives = []
++    aos = []
++    for atom in range(4):
++        for axis in range(2):
++            primitive_index = len(primitives)
++            primitives.append((0.57 + 0.07 * primitive_index, 1.0))
++            row = [0.0] * 16
++            row[:4] = [atom, primitive_index, 1, 1]
++            row[4 + axis] = 1
++            row[7] = 1.0
++            aos.append(row)
++    basis = SimpleNamespace(
++        natom=4,
++        nao=len(aos),
++        nprimitive=len(primitives),
++        shells=tuple(SimpleNamespace(angular_momentum=1) for _ in range(4)),
++        packed=np.concatenate(
++            (
++                centers.ravel(),
++                np.asarray(primitives).ravel(),
++                np.asarray(aos).ravel(),
++            )
++        ),
++    )
++
++    packaged_calls = []
++    plans = []
++
++    def packaged(
++        integral: typing.Any,
++        candidate_library: typing.Any,
++        *,
++        component_indices: typing.Any,
++        entry_prefix: str,
++    ) -> typing.Any:
++        packaged_calls.append((tuple(component_indices), entry_prefix))
++        return SimpleNamespace(backend="cpu")
++
++    def forbidden_compile(*args: typing.Any, **kwargs: typing.Any) -> None:
++        pytest.fail("grouped AOT reuse reached runtime compilation")
++
++    class FakePlan:
++        def __init__(self, artifact: typing.Any, **kwargs: typing.Any) -> None:
++            plans.append(self)
++
++        def raw(
++            self,
++            primitives: typing.Any,
++            centers: typing.Any,
++            component_indices: typing.Any,
++        ) -> typing.Any:
++            return SimpleNamespace(
++                values=np.zeros((1, 13)),
++                diagnostics={"records": 1},
++            )
++
++        def close(self) -> None:
++            pass
++
++    monkeypatch.setattr(runtime, "packaged_weighted_eri", packaged)
++    monkeypatch.setattr(runtime, "compile_weighted_eri", forbidden_compile)
++    monkeypatch.setattr(runtime, "PreparedWeightedEri", FakePlan)
++
++    executor = runtime.RangeExchangeExecutor(
++        basis,
++        tmp_path,
++        8,
++        compiler,
++        aot_library=library,
++    )
++    try:
++        executor.integral(primitive, (0, 2, 4, 6), 1.0)
++        executor.integral(primitive, (1, 3, 5, 7), 1.0)
++    finally:
++        executor.close()
++    assert len(plans) == 1
++    assert len(packaged_calls) == 1
++    assert executor.packaged_aot_plans == 1
++    assert executor.runtime_compilations == 0
++
++
++def test_native_library_exports_wb97mv_rsh_aot() -> None:
++    path = os.environ.get("VIBEQC_LIBRARY")
++    if not path:
++        pytest.skip("native VibeQC library not supplied")
++    library = ct.CDLL(str(Path(path)))
++    count = 0
++    for primitive in _wb97mv_ranges():
++        radial = _radial(primitive)
++        for angular_value in product(AOT_ANGULAR_DOMAIN, repeat=4):
++            angular = tuple(angular_value)
++            for group_index in range(len(component_groups(angular))):
++                prefix = entry_prefix(radial, angular, group_index)
++                assert getattr(library, f"{prefix}_identity_v2")
++                assert getattr(library, f"{prefix}_create_v2")
++                assert getattr(library, f"{prefix}_run_v2")
++                count += 1
++    assert count == 34
++
++
++def test_cmake_packages_all_wb97mv_rsh_programs() -> None:
++    root = Path(__file__).resolve().parents[2]
++    cmake = (root / "cmake/VibeQCGeneratedSources.cmake").read_text(encoding="utf-8")
++    assert "VIBEQC_WB97MV_RSH_CPU_AOT_SOURCES" in cmake
++    assert "generate_wb97mv_rsh_cpu_aot.py" in cmake
++    assert "foreach(_vibeqc_rsh_family IN ITEMS sr lr)" in cmake
++    assert 'if(_vibeqc_rsh_shell STREQUAL "1111")' in cmake
+diff --git a/tests/python/test_weighted_eri_binary_identity.py b/tests/python/test_weighted_eri_binary_identity.py
+new file mode 100644
+index 00000000..92fd331b
+--- /dev/null
++++ b/tests/python/test_weighted_eri_binary_identity.py
+@@ -0,0 +1,147 @@
++"""Small-file integrity regressions; no compiler or native library is required."""
++
++from __future__ import annotations
++
++import os
++import typing
++from types import SimpleNamespace
++
++import pytest
++from vibeqc_compiler.integral import weighted_eri_execute as runtime
++
++if typing.TYPE_CHECKING:
++    from pathlib import Path
++
++
++def _artifact(path: Path, *, packaged: bool = True) -> SimpleNamespace:
++    return SimpleNamespace(
++        backend="cpu",
++        native=SimpleNamespace(
++            library=path,
++            metadata={
++                "identity": {
++                    "schema": "vibeqc.weighted-packaged.v1" if packaged else "jit",
++                },
++            },
++        ),
++    )
++
++
++def test_unchanged_packaged_binary_is_hashed_once(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    path = tmp_path / "library.so"
++    path.write_bytes(b"unchanged library")
++    original = runtime.file_hash
++    calls = []
++
++    def counted(candidate: Path) -> str:
++        calls.append(candidate)
++        return original(candidate)
++
++    monkeypatch.setattr(runtime, "file_hash", counted)
++    expected = original(path)
++    for _ in range(5):
++        assert runtime._artifact_binary_hash(_artifact(path)) == expected
++    assert len(calls) == 1
++
++
++@pytest.mark.parametrize("replacement", (False, True))
++def test_file_generation_change_invalidates_packaged_hash(
++    tmp_path: Path, replacement: bool
++) -> None:
++    path = tmp_path / "library.so"
++    path.write_bytes(b"old built library")
++    previous = path.stat()
++    digest = runtime._artifact_binary_hash(_artifact(path))
++    if replacement:
++        alternate = tmp_path / "replacement.so"
++        alternate.write_bytes(b"new built library")
++        # Same size and mtime are insufficient cache identity after replacement.
++        os.utime(alternate, ns=(previous.st_atime_ns, previous.st_mtime_ns))
++        os.replace(alternate, path)
++    else:
++        path.write_bytes(b"new built library")
++        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000))
++    current = runtime._artifact_binary_hash(_artifact(path))
++    assert current == runtime.file_hash(path)
++    assert current != digest
++
++
++def test_cached_path_must_still_exist(tmp_path: Path) -> None:
++    path = tmp_path / "library.so"
++    path.write_bytes(b"library")
++    runtime._packaged_library_hash(path)
++    path.unlink()
++    with pytest.raises(FileNotFoundError):
++        runtime._packaged_library_hash(path)
++
++
++def test_change_during_hashing_is_rejected_not_cached(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    path = tmp_path / "library.so"
++    path.write_bytes(b"old library")
++    original = runtime.file_hash
++
++    def changed(candidate: Path) -> str:
++        digest = original(candidate)
++        candidate.write_bytes(b"new and differently sized library")
++        return digest
++
++    monkeypatch.setattr(runtime, "file_hash", changed)
++    with pytest.raises(ValueError, match="changed during verification"):
++        runtime._packaged_library_hash(path)
++    monkeypatch.setattr(runtime, "file_hash", original)
++    assert runtime._packaged_library_hash(path) == original(path)
++
++
++def test_standalone_jit_keeps_uncached_verification(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    path = tmp_path / "jit.so"
++    path.write_bytes(b"standalone")
++    original = runtime.file_hash
++    calls = []
++
++    def counted(candidate: Path) -> str:
++        calls.append(candidate)
++        return original(candidate)
++
++    monkeypatch.setattr(runtime, "file_hash", counted)
++    monkeypatch.setattr(
++        runtime,
++        "_packaged_library_hash",
++        lambda _: pytest.fail("standalone JIT used packaged hash caching"),
++    )
++    artifact = _artifact(path, packaged=False)
++    for _ in range(2):
++        assert runtime._artifact_binary_hash(artifact) == original(path)
++    assert len(calls) == 2
++
++
++def test_stale_packaged_artifact_is_rejected_before_cdll(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    path = tmp_path / "library.so"
++    path.write_bytes(b"old library")
++    expected = runtime._packaged_library_hash(path)
++    path.write_bytes(b"rebuilt library with changed bytes")
++    native = SimpleNamespace(
++        library=path,
++        metadata={
++            "identity": {"schema": "vibeqc.weighted-packaged.v1"},
++            "key": "a" * 64,
++            "binary_sha256": expected,
++        },
++    )
++    # Isolate binary admission from the separately tested mathematical metadata.
++    monkeypatch.setattr(runtime.CompiledWeightedEri, "validate", lambda _: None)
++    artifact = runtime.CompiledWeightedEri(
++        native, None, None, (0,), ((0,) * 12,), "cpu", "fixture-program"
++    )
++    monkeypatch.setattr(
++        runtime.ct, "CDLL", lambda _: pytest.fail("stale binary reached CDLL")
++    )
++    with pytest.raises(ValueError, match="binary hash mismatch"):
++        runtime.PreparedWeightedEri(artifact)
+diff --git a/tools/generate_wb97mv_rsh_cpu_aot.py b/tools/generate_wb97mv_rsh_cpu_aot.py
+new file mode 100644
+index 00000000..4491c17b
+--- /dev/null
++++ b/tools/generate_wb97mv_rsh_cpu_aot.py
+@@ -0,0 +1,79 @@
++"""Emit fixed WB97M-V CPU SR/LR weighted-ERI derivative programs."""
++
++from __future__ import annotations
++
++import argparse
++import sys
++from itertools import product
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path[:0] = [str(ROOT / "python"), str(ROOT)]
++
++from vibeqc_compiler.integral.range_separation import CoulombKernel
++from vibeqc_compiler.integral.rsh_cpu_aot import (
++    AOT_ANGULAR_DOMAIN,
++    component_groups,
++    inventory_size,
++    program_source,
++)
++from vibeqc_compiler.method import resolve_method
++from vibeqc_compiler.method.spec import RangeSeparatedExchangePrimitive
++
++
++def _write_if_changed(path: Path, content: str) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    if path.exists() and path.read_text(encoding="utf-8") == content:
++        return
++    path.write_text(content, encoding="utf-8")
++
++
++def _radial(primitive: RangeSeparatedExchangePrimitive) -> CoulombKernel:
++    family = {
++        "short-range": "short_range",
++        "long-range": "long_range",
++    }[primitive.operator]
++    return CoulombKernel(family, float(primitive.omega))
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-directory", type=Path, required=True)
++    args = parser.parse_args()
++
++    method = resolve_method("WB97M-V", spin="unpolarized")
++    primitives = tuple(
++        primitive
++        for primitive in method.primitives
++        if type(primitive) is RangeSeparatedExchangePrimitive
++    )
++    if (
++        len(primitives) != 2
++        or {primitive.operator for primitive in primitives}
++        != {"short-range", "long-range"}
++        or {primitive.omega for primitive in primitives} != {primitives[0].omega}
++    ):
++        raise RuntimeError("WB97M-V range-exchange MethodIR contract drift")
++
++    written = 0
++    tags = {"short-range": "sr", "long-range": "lr"}
++    for primitive in primitives:
++        radial = _radial(primitive)
++        tag = tags[primitive.operator]
++        for angular_value in product(AOT_ANGULAR_DOMAIN, repeat=4):
++            angular = tuple(angular_value)
++            shell = "".join(str(value) for value in angular)
++            for group_index in range(len(component_groups(angular))):
++                source, _, _ = program_source(radial, angular, group_index)
++                _write_if_changed(
++                    args.output_directory
++                    / f"vibeqc_wb97mv_rsh_{tag}_{shell}_{group_index}.cpp",
++                    source,
++                )
++                written += 1
++    if written != inventory_size():
++        raise RuntimeError(f"WB97M-V CPU RSH AOT inventory drift: {written} programs")
++
++
++if __name__ == "__main__":
++    main()

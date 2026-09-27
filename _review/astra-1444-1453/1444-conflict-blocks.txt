@@ -1,0 +1,414 @@
+
+===== src/xtb/native/CUDA_SOURCE_PROVENANCE.json =====
+<<<<<<< HEAD
+    "src/backends/cuda/gfn2_d4.cu": "After shared D4 scalar ownership, retire the unreachable dense-cache CUDA API and keep only production pair-list traversal, cutoff, validation, reduction, error, and publication policy."
+=======
+    "src/backends/cuda/gfn2_d4.cu": "Consume shared VibeQC D4 coordination, charge interpolation, C6 coefficient, pair damping, ATM, and CN-adjoint mathematics while retaining CUDA topology, cutoff, pair-list traversal, reduction, error, and publication ownership."
+>>>>>>> c308ff84dd0fb68a83a027ae02206fe98ac7c7ee
+<<<<<<< HEAD
+      "vendored_sha256": "def41d0c8b47423ac5bda87779cdc667ab2ac21a9753bb10c7b70531ef38a42c"
+=======
+      "vendored_sha256": "5ccb55e7e1a0c63cdf4aca051fcd7c52daef4af49ed6d273b887792782947007"
+>>>>>>> c308ff84dd0fb68a83a027ae02206fe98ac7c7ee
+
+===== src/xtb/native/src/backends/cuda/gfn2_d4.cu =====
+<<<<<<< HEAD
+=======
+__global__ void two_body_cn_adjoint_kernel(Gfn2D4DeviceBatch batch,
+                                           Gfn2D4DeviceParameters parameters,
+                                           Gfn2D4DeviceCache cache, Gfn2D4DeviceWorkspace workspace,
+                                           std::uint32_t* device_error) {
+  const std::int64_t system = static_cast<std::int64_t>(blockIdx.x);
+  __shared__ std::uint32_t shared_error;
+  if (!block_system_is_valid(workspace, system, device_error, shared_error)) {
+    return;
+  }
+  const std::int64_t begin = batch.atom_offsets[system];
+  const std::int64_t end = batch.atom_offsets[system + 1];
+  for (std::int64_t atom = begin + threadIdx.x; atom < end; atom += blockDim.x) {
+    double adjoint = 0.0;
+    for (std::int64_t other = begin; other < end; ++other) {
+      if (atom == other) {
+        continue;
+      }
+      const std::int64_t first = atom < other ? atom : other;
+      const std::int64_t second = atom < other ? other : atom;
+      const double damping =
+          cache.pair_data[pair_index(batch, system, first, second) * kGfn2D4PairDataElements + 3];
+      if (damping == 0.0) {
+        continue;
+      }
+      const PairCoefficient coefficient =
+          pair_coefficient(batch, parameters, workspace, first, second);
+      adjoint -= (atom == first ? coefficient.first_cn : coefficient.second_cn) * damping;
+    }
+    if (!isfinite(adjoint)) {
+      record_system_error(workspace, system, Gfn2D4DeviceError::kNonfiniteArithmetic);
+      return;
+    }
+    workspace.coordination_adjoints[atom] = adjoint;
+  }
+}
+
+__global__ void two_body_gradient_kernel(Gfn2D4DeviceBatch batch, Gfn2D4DeviceParameters parameters,
+                                         Gfn2D4DeviceCache cache, Gfn2D4DeviceWorkspace workspace,
+                                         std::uint32_t* device_error) {
+  const std::int64_t system = static_cast<std::int64_t>(blockIdx.x);
+  __shared__ std::uint32_t shared_error;
+  if (!block_system_is_valid(workspace, system, device_error, shared_error)) {
+    return;
+  }
+  const std::int64_t begin = batch.atom_offsets[system];
+  const std::int64_t end = batch.atom_offsets[system + 1];
+  for (std::int64_t atom = begin + threadIdx.x; atom < end; atom += blockDim.x) {
+    double gradient[3]{0.0, 0.0, 0.0};
+    for (std::int64_t other = begin; other < end; ++other) {
+      if (atom == other) {
+        continue;
+      }
+      const std::int64_t first = atom < other ? atom : other;
+      const std::int64_t second = atom < other ? other : atom;
+      const double sign = atom == first ? 1.0 : -1.0;
+      const double* pair =
+          cache.pair_data + pair_index(batch, system, first, second) * kGfn2D4PairDataElements;
+      if (pair[3] != 0.0) {
+        const PairCoefficient coefficient =
+            pair_coefficient(batch, parameters, workspace, first, second);
+        const double radial_scale = sign * -coefficient.c6 * pair[4];
+        for (int axis = 0; axis < 3; ++axis) {
+          gradient[axis] += radial_scale * pair[axis];
+        }
+      }
+
+      const double distance_squared = pair[0] * pair[0] + pair[1] * pair[1] + pair[2] * pair[2];
+      if (distance_squared <= kCoordinationCutoffSquared) {
+        const Gfn2D4DeviceElementData first_element =
+            parameters.elements[batch.atomic_numbers[first] - 1];
+        const Gfn2D4DeviceElementData second_element =
+            parameters.elements[batch.atomic_numbers[second] - 1];
+        const double distance = sqrt(distance_squared);
+        const double derivative =
+            d4_math::coordination_pair(first_element, second_element, distance).derivative;
+        const double scale =
+            sign * derivative *
+            (workspace.coordination_adjoints[first] + workspace.coordination_adjoints[second]) /
+            distance;
+        for (int axis = 0; axis < 3; ++axis) {
+          gradient[axis] += scale * pair[axis];
+        }
+      }
+    }
+    if (!isfinite(gradient[0]) || !isfinite(gradient[1]) || !isfinite(gradient[2])) {
+      record_system_error(workspace, system, Gfn2D4DeviceError::kNonfiniteArithmetic);
+      return;
+    }
+    for (int axis = 0; axis < 3; ++axis) {
+      workspace.gradient_scratch[atom * 3 + axis] = gradient[axis];
+    }
+  }
+}
+
+__global__ void atm_energy_kernel(Gfn2D4DeviceBatch batch, Gfn2D4DeviceParameters parameters,
+                                  Gfn2D4DeviceCache cache, Gfn2D4DeviceWorkspace workspace,
+                                  std::uint32_t* device_error) {
+  const std::int64_t system = static_cast<std::int64_t>(blockIdx.x);
+  __shared__ double partial[kThreadsPerBlock];
+  __shared__ std::uint32_t shared_error;
+  if (!block_system_is_valid(workspace, system, device_error, shared_error)) {
+    return;
+  }
+  const std::int64_t begin = batch.atom_offsets[system];
+  const std::int64_t end = batch.atom_offsets[system + 1];
+  double energy = 0.0;
+  std::int64_t outer_pair = 0;
+  for (std::int64_t i = begin + 2; i < end; ++i) {
+    for (std::int64_t j = begin + 1; j < i; ++j) {
+      if (outer_pair++ % blockDim.x != threadIdx.x) {
+        continue;
+      }
+      const double* vij =
+          cache.pair_data + pair_index(batch, system, j, i) * kGfn2D4PairDataElements;
+      const double r2ij = vij[0] * vij[0] + vij[1] * vij[1] + vij[2] * vij[2];
+      if (r2ij > kAtmCutoffSquared) {
+        continue;
+      }
+      const PairCoefficient c6ij = pair_coefficient(batch, parameters, workspace, i, j);
+      for (std::int64_t k = begin; k < j; ++k) {
+        const double* vik =
+            cache.pair_data + pair_index(batch, system, k, i) * kGfn2D4PairDataElements;
+        const double* vjk =
+            cache.pair_data + pair_index(batch, system, k, j) * kGfn2D4PairDataElements;
+        const double r2ik = vik[0] * vik[0] + vik[1] * vik[1] + vik[2] * vik[2];
+        const double r2jk = vjk[0] * vjk[0] + vjk[1] * vjk[1] + vjk[2] * vjk[2];
+        if (r2ik > kAtmCutoffSquared || r2jk > kAtmCutoffSquared) {
+          continue;
+        }
+        const PairCoefficient c6ik = pair_coefficient(batch, parameters, workspace, i, k);
+        const PairCoefficient c6jk = pair_coefficient(batch, parameters, workspace, j, k);
+        const double r0ij = pair_damping_radius(batch, parameters, j, i);
+        const double r0ik = pair_damping_radius(batch, parameters, k, i);
+        const double r0jk = pair_damping_radius(batch, parameters, k, j);
+        const auto atm = d4_math::atm_terms<true>(
+            r2ij, r2ik, r2jk, r0ij, r0ik, r0jk, c6ij.c6, c6ik.c6,
+            c6jk.c6, kDispersionS9, kAtmExponent);
+        energy -= atm.energy;
+      }
+    }
+  }
+  if (!isfinite(energy)) {
+    record_system_error(workspace, system, Gfn2D4DeviceError::kNonfiniteArithmetic);
+    energy = 0.0;
+  }
+  partial[threadIdx.x] = energy;
+  __syncthreads();
+  for (int offset = blockDim.x / 2; offset > 0; offset /= 2) {
+    if (threadIdx.x < offset) {
+      partial[threadIdx.x] += partial[threadIdx.x + offset];
+    }
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) {
+    commit_energy_reduction(partial[0], workspace, system, device_error);
+  }
+}
+
+>>>>>>> c308ff84dd0fb68a83a027ae02206fe98ac7c7ee
+<<<<<<< HEAD
+=======
+__global__ void atm_gradient_kernel(Gfn2D4DeviceBatch batch, Gfn2D4DeviceParameters parameters,
+                                    Gfn2D4DeviceCache cache, Gfn2D4DeviceWorkspace workspace,
+                                    std::uint32_t* device_error) {
+  const std::int64_t system = static_cast<std::int64_t>(blockIdx.x);
+  __shared__ std::uint32_t shared_error;
+  if (!block_system_is_valid(workspace, system, device_error, shared_error)) {
+    return;
+  }
+  const std::int64_t begin = batch.atom_offsets[system];
+  const std::int64_t end = batch.atom_offsets[system + 1];
+  std::int64_t outer_pair = 0;
+  for (std::int64_t i = begin + 2; i < end; ++i) {
+    for (std::int64_t j = begin + 1; j < i; ++j) {
+      if (outer_pair++ % blockDim.x != threadIdx.x) {
+        continue;
+      }
+      const double* vij =
+          cache.pair_data + pair_index(batch, system, j, i) * kGfn2D4PairDataElements;
+      const double r2ij = vij[0] * vij[0] + vij[1] * vij[1] + vij[2] * vij[2];
+      if (r2ij > kAtmCutoffSquared) {
+        continue;
+      }
+      const PairCoefficient c6ij = pair_coefficient(batch, parameters, workspace, i, j);
+      for (std::int64_t k = begin; k < j; ++k) {
+        const double* vik =
+            cache.pair_data + pair_index(batch, system, k, i) * kGfn2D4PairDataElements;
+        const double* vjk =
+            cache.pair_data + pair_index(batch, system, k, j) * kGfn2D4PairDataElements;
+        const double r2ik = vik[0] * vik[0] + vik[1] * vik[1] + vik[2] * vik[2];
+        const double r2jk = vjk[0] * vjk[0] + vjk[1] * vjk[1] + vjk[2] * vjk[2];
+        if (r2ik > kAtmCutoffSquared || r2jk > kAtmCutoffSquared) {
+          continue;
+        }
+        const PairCoefficient c6ik = pair_coefficient(batch, parameters, workspace, i, k);
+        const PairCoefficient c6jk = pair_coefficient(batch, parameters, workspace, j, k);
+        if (!(c6ij.c6 > 0.0) || !(c6ik.c6 > 0.0) || !(c6jk.c6 > 0.0)) {
+          record_system_error(workspace, system, Gfn2D4DeviceError::kNonfiniteArithmetic);
+          return;
+        }
+        const double r0ij = pair_damping_radius(batch, parameters, j, i);
+        const double r0ik = pair_damping_radius(batch, parameters, k, i);
+        const double r0jk = pair_damping_radius(batch, parameters, k, j);
+        const auto atm = d4_math::atm_terms(
+            r2ij, r2ik, r2jk, r0ij, r0ik, r0jk, c6ij.c6, c6ik.c6,
+            c6jk.c6, kDispersionS9, kAtmExponent);
+        double dgij[3];
+        double dgik[3];
+        double dgjk[3];
+        atm_distance_gradient(r2ij, r2jk, r2ik, vij, atm.r5_product, atm.c9,
+                              atm.angle, atm.damping, atm.damping_derivative, dgij);
+        atm_distance_gradient(r2ik, r2jk, r2ij, vik, atm.r5_product, atm.c9,
+                              atm.angle, atm.damping, atm.damping_derivative, dgik);
+        atm_distance_gradient(r2jk, r2ik, r2ij, vjk, atm.r5_product, atm.c9,
+                              atm.angle, atm.damping, atm.damping_derivative, dgjk);
+        const double i_adjoint =
+            d4_math::atm_cn_adjoint(atm.energy, c6ij.c6, c6ik.c6, c6ij.first_cn, c6ik.first_cn);
+        const double j_adjoint =
+            d4_math::atm_cn_adjoint(atm.energy, c6ij.c6, c6jk.c6, c6ij.second_cn, c6jk.first_cn);
+        const double k_adjoint =
+            d4_math::atm_cn_adjoint(atm.energy, c6ik.c6, c6jk.c6, c6ik.second_cn, c6jk.second_cn);
+        if (!isfinite(dgij[0]) || !isfinite(dgij[1]) || !isfinite(dgij[2]) || !isfinite(dgik[0]) ||
+            !isfinite(dgik[1]) || !isfinite(dgik[2]) || !isfinite(dgjk[0]) || !isfinite(dgjk[1]) ||
+            !isfinite(dgjk[2]) || !isfinite(i_adjoint) || !isfinite(j_adjoint) ||
+            !isfinite(k_adjoint)) {
+          record_system_error(workspace, system, Gfn2D4DeviceError::kNonfiniteArithmetic);
+          return;
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+          atomic_add_fp64(workspace.gradient_scratch + i * 3 + axis, -dgij[axis] - dgik[axis]);
+          atomic_add_fp64(workspace.gradient_scratch + j * 3 + axis, dgij[axis] - dgjk[axis]);
+          atomic_add_fp64(workspace.gradient_scratch + k * 3 + axis, dgik[axis] + dgjk[axis]);
+        }
+        atomic_add_fp64(workspace.coordination_adjoints + i, i_adjoint);
+        atomic_add_fp64(workspace.coordination_adjoints + j, j_adjoint);
+        atomic_add_fp64(workspace.coordination_adjoints + k, k_adjoint);
+      }
+    }
+  }
+}
+
+>>>>>>> c308ff84dd0fb68a83a027ae02206fe98ac7c7ee
+<<<<<<< HEAD
+=======
+__global__ void atm_energy_split_kernel(Gfn2D4DeviceBatch batch, Gfn2D4DeviceParameters parameters,
+                                        Gfn2D4DeviceCache cache, Gfn2D4DeviceWorkspace workspace,
+                                        std::uint32_t* device_error) {
+  const std::int64_t system = static_cast<std::int64_t>(blockIdx.y);
+  const std::int64_t slice = static_cast<std::int64_t>(blockIdx.x);
+  const std::int64_t slices = static_cast<std::int64_t>(gridDim.x);
+  __shared__ double partial[kThreadsPerBlock];
+  __shared__ std::uint32_t shared_error;
+  if (!block_system_is_valid(workspace, system, device_error, shared_error)) {
+    return;
+  }
+  const std::int64_t begin = batch.atom_offsets[system];
+  const std::int64_t end = batch.atom_offsets[system + 1];
+  const std::int64_t atom_count = end - begin;
+  /* Flat outer-pair count over the atoms {begin+1, ..., end-1}. */
+  const std::int64_t pair_count = atom_count >= 3 ? (atom_count - 1) * (atom_count - 2) / 2 : 0;
+  const std::int64_t slice_start = pair_count * slice / slices;
+  const std::int64_t slice_end = pair_count * (slice + 1) / slices;
+  double energy = 0.0;
+  for (std::int64_t pair = slice_start + threadIdx.x; pair < slice_end; pair += blockDim.x) {
+    std::int64_t j = 0;
+    std::int64_t i = 0;
+    atm_pair_from_flat(pair, begin, &j, &i);
+    const double* vij = cache.pair_data + pair_index(batch, system, j, i) * kGfn2D4PairDataElements;
+    const double r2ij = vij[0] * vij[0] + vij[1] * vij[1] + vij[2] * vij[2];
+    if (r2ij > kAtmCutoffSquared) {
+      continue;
+    }
+    const PairCoefficient c6ij = pair_coefficient(batch, parameters, workspace, i, j);
+    for (std::int64_t k = begin; k < j; ++k) {
+      const double* vik =
+          cache.pair_data + pair_index(batch, system, k, i) * kGfn2D4PairDataElements;
+      const double* vjk =
+          cache.pair_data + pair_index(batch, system, k, j) * kGfn2D4PairDataElements;
+      const double r2ik = vik[0] * vik[0] + vik[1] * vik[1] + vik[2] * vik[2];
+      const double r2jk = vjk[0] * vjk[0] + vjk[1] * vjk[1] + vjk[2] * vjk[2];
+      if (r2ik > kAtmCutoffSquared || r2jk > kAtmCutoffSquared) {
+        continue;
+      }
+      const PairCoefficient c6ik = pair_coefficient(batch, parameters, workspace, i, k);
+      const PairCoefficient c6jk = pair_coefficient(batch, parameters, workspace, j, k);
+      const double r0ij = pair_damping_radius(batch, parameters, j, i);
+      const double r0ik = pair_damping_radius(batch, parameters, k, i);
+      const double r0jk = pair_damping_radius(batch, parameters, k, j);
+      const auto atm = d4_math::atm_terms<true>(
+          r2ij, r2ik, r2jk, r0ij, r0ik, r0jk, c6ij.c6, c6ik.c6,
+          c6jk.c6, kDispersionS9, kAtmExponent);
+      energy -= atm.energy;
+    }
+  }
+  if (!isfinite(energy)) {
+    record_system_error(workspace, system, Gfn2D4DeviceError::kNonfiniteArithmetic);
+    energy = 0.0;
+  }
+  partial[threadIdx.x] = energy;
+  __syncthreads();
+  for (int offset = blockDim.x / 2; offset > 0; offset /= 2) {
+    if (threadIdx.x < offset) {
+      partial[threadIdx.x] += partial[threadIdx.x + offset];
+    }
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) {
+    workspace.atom_scratch[system * slices + slice] = partial[0];
+  }
+}
+
+>>>>>>> c308ff84dd0fb68a83a027ae02206fe98ac7c7ee
+<<<<<<< HEAD
+=======
+__global__ void atm_gradient_split_kernel(Gfn2D4DeviceBatch batch,
+                                          Gfn2D4DeviceParameters parameters,
+                                          Gfn2D4DeviceCache cache, Gfn2D4DeviceWorkspace workspace,
+                                          std::uint32_t* device_error) {
+  const std::int64_t system = static_cast<std::int64_t>(blockIdx.y);
+  const std::int64_t slice = static_cast<std::int64_t>(blockIdx.x);
+  const std::int64_t slices = static_cast<std::int64_t>(gridDim.x);
+  __shared__ std::uint32_t shared_error;
+  if (!block_system_is_valid(workspace, system, device_error, shared_error)) {
+    return;
+  }
+  const std::int64_t begin = batch.atom_offsets[system];
+  const std::int64_t end = batch.atom_offsets[system + 1];
+  const std::int64_t atom_count = end - begin;
+  const std::int64_t pair_count = atom_count >= 3 ? (atom_count - 1) * (atom_count - 2) / 2 : 0;
+  const std::int64_t slice_start = pair_count * slice / slices;
+  const std::int64_t slice_end = pair_count * (slice + 1) / slices;
+  for (std::int64_t pair = slice_start + threadIdx.x; pair < slice_end; pair += blockDim.x) {
+    std::int64_t j = 0;
+    std::int64_t i = 0;
+    atm_pair_from_flat(pair, begin, &j, &i);
+    const double* vij = cache.pair_data + pair_index(batch, system, j, i) * kGfn2D4PairDataElements;
+    const double r2ij = vij[0] * vij[0] + vij[1] * vij[1] + vij[2] * vij[2];
+    if (r2ij > kAtmCutoffSquared) {
+      continue;
+    }
+    const PairCoefficient c6ij = pair_coefficient(batch, parameters, workspace, i, j);
+    for (std::int64_t k = begin; k < j; ++k) {
+      const double* vik =
+          cache.pair_data + pair_index(batch, system, k, i) * kGfn2D4PairDataElements;
+      const double* vjk =
+          cache.pair_data + pair_index(batch, system, k, j) * kGfn2D4PairDataElements;
+      const double r2ik = vik[0] * vik[0] + vik[1] * vik[1] + vik[2] * vik[2];
+      const double r2jk = vjk[0] * vjk[0] + vjk[1] * vjk[1] + vjk[2] * vjk[2];
+      if (r2ik > kAtmCutoffSquared || r2jk > kAtmCutoffSquared) {
+        continue;
+      }
+      const PairCoefficient c6ik = pair_coefficient(batch, parameters, workspace, i, k);
+      const PairCoefficient c6jk = pair_coefficient(batch, parameters, workspace, j, k);
+      if (!(c6ij.c6 > 0.0) || !(c6ik.c6 > 0.0) || !(c6jk.c6 > 0.0)) {
+        record_system_error(workspace, system, Gfn2D4DeviceError::kNonfiniteArithmetic);
+        return;
+      }
+      const double r0ij = pair_damping_radius(batch, parameters, j, i);
+      const double r0ik = pair_damping_radius(batch, parameters, k, i);
+      const double r0jk = pair_damping_radius(batch, parameters, k, j);
+      const auto atm = d4_math::atm_terms(
+          r2ij, r2ik, r2jk, r0ij, r0ik, r0jk, c6ij.c6, c6ik.c6,
+          c6jk.c6, kDispersionS9, kAtmExponent);
+      double dgij[3];
+      double dgik[3];
+      double dgjk[3];
+      atm_distance_gradient(r2ij, r2jk, r2ik, vij, atm.r5_product, atm.c9,
+                            atm.angle, atm.damping, atm.damping_derivative, dgij);
+      atm_distance_gradient(r2ik, r2jk, r2ij, vik, atm.r5_product, atm.c9,
+                            atm.angle, atm.damping, atm.damping_derivative, dgik);
+      atm_distance_gradient(r2jk, r2ik, r2ij, vjk, atm.r5_product, atm.c9,
+                            atm.angle, atm.damping, atm.damping_derivative, dgjk);
+      const double i_adjoint =
+          d4_math::atm_cn_adjoint(atm.energy, c6ij.c6, c6ik.c6, c6ij.first_cn, c6ik.first_cn);
+      const double j_adjoint =
+          d4_math::atm_cn_adjoint(atm.energy, c6ij.c6, c6jk.c6, c6ij.second_cn, c6jk.first_cn);
+      const double k_adjoint =
+          d4_math::atm_cn_adjoint(atm.energy, c6ik.c6, c6jk.c6, c6ik.second_cn, c6jk.second_cn);
+      if (!isfinite(dgij[0]) || !isfinite(dgij[1]) || !isfinite(dgij[2]) || !isfinite(dgik[0]) ||
+          !isfinite(dgik[1]) || !isfinite(dgik[2]) || !isfinite(dgjk[0]) || !isfinite(dgjk[1]) ||
+          !isfinite(dgjk[2]) || !isfinite(i_adjoint) || !isfinite(j_adjoint) ||
+          !isfinite(k_adjoint)) {
+        record_system_error(workspace, system, Gfn2D4DeviceError::kNonfiniteArithmetic);
+        return;
+      }
+      for (int axis = 0; axis < 3; ++axis) {
+        atomic_add_fp64(workspace.gradient_scratch + i * 3 + axis, -dgij[axis] - dgik[axis]);
+        atomic_add_fp64(workspace.gradient_scratch + j * 3 + axis, dgij[axis] - dgjk[axis]);
+        atomic_add_fp64(workspace.gradient_scratch + k * 3 + axis, dgik[axis] + dgjk[axis]);
+      }
+      atomic_add_fp64(workspace.coordination_adjoints + i, i_adjoint);
+      atomic_add_fp64(workspace.coordination_adjoints + j, j_adjoint);
+      atomic_add_fp64(workspace.coordination_adjoints + k, k_adjoint);
+    }
+  }
+}
+
+>>>>>>> c308ff84dd0fb68a83a027ae02206fe98ac7c7ee

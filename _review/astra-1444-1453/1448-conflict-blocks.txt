@@ -1,0 +1,9 @@
+
+===== tests/python/test_program_region_boundary_validation.py =====
+<<<<<<< HEAD
+    assert tuple(buffer.name for buffer in fused.buffers) == (
+        "x", "y", "b", "c", "out"
+    )
+=======
+    assert tuple(buffer.name for buffer in fused.buffers) == ("x", "y", "b", "c", "out")
+>>>>>>> c308ff84dd0fb68a83a027ae02206fe98ac7c7ee

@@ -1,0 +1,28 @@
+{
+  "master": "c308ff84dd0fb68a83a027ae02206fe98ac7c7ee",
+  "prs": {
+    "1452": {
+      "head": "0f03dd5993bd7dcc0e58b20afdf6cae57df815df",
+      "conflicts": [
+        "cmake/VibeQCGeneratedSources.cmake",
+        "cmake/VibeQCSourceIdentity.json"
+      ],
+      "tests_exit": 0,
+      "candidate": "e1ad10e6ff6d9e5a7a8150371a1e35dc6bd47309"
+    },
+    "1448": {
+      "head": "1434916287df7c2ce1ceb42c4adf0d48fe0529c0",
+      "conflicts": [
+        "tests/python/test_program_region_boundary_validation.py"
+      ],
+      "tests_exit": 4
+    },
+    "1444": {
+      "head": "155e0b0ac50b5279a35846379f8fa7fb5fb610c3",
+      "conflicts": [
+        "src/xtb/native/CUDA_SOURCE_PROVENANCE.json",
+        "src/xtb/native/src/backends/cuda/gfn2_d4.cu"
+      ]
+    }
+  }
+}

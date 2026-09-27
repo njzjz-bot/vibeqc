@@ -1,0 +1,1015 @@
+diff --git a/python/vibeqc_compiler/dft/xc_program.py b/python/vibeqc_compiler/dft/xc_program.py
+new file mode 100644
+index 00000000..5646ab50
+--- /dev/null
++++ b/python/vibeqc_compiler/dft/xc_program.py
+@@ -0,0 +1,481 @@
++"""Bind native CUDA-KS XC staging routes to ProgramIR region selection.
++
++This module describes the actual `CudaKsPlan::stage_xc` execution boundary.
++The portable host-unfused route downloads the current device density, evaluates
++the audited CPU XC/Vxc implementation, then uploads Vxc plus scalar totals/error
++back to the CUDA KS state. The existing resident CudaXcPlan is an alternate
++implementation of exactly that boundary.
++
++Scientific admission remains owned by DFT. ProgramIR owns only the replaceable
++execution region, while ScheduleContract remains the shared measured-promotion
++and fallback vocabulary. No XC equation or CUDA kernel is duplicated here.
++"""
++
++from __future__ import annotations
++
++import math
++import typing
++from dataclasses import dataclass, replace
++
++from vibeqc_compiler.common.liveness import EffectKind
++from vibeqc_compiler.common.program import PlanCall, ProgramBuffer, ProgramIR
++from vibeqc_compiler.common.program_region import (
++    ProgramRegion,
++    ProgramRegionCandidate,
++    apply_program_region_candidate,
++    derive_program_region,
++    select_program_region_candidate,
++)
++from vibeqc_compiler.common.provenance import canonical_hash
++from vibeqc_compiler.common.resources import byte_product
++from vibeqc_compiler.common.schedule import ScheduleResources
++
++from .xc_schedule import (
++    GridXcCandidateAssessment,
++    GridXcCandidateShape,
++    GridXcScientificIdentity,
++    grid_xc_domain_identity,
++    grid_xc_shape_identity,
++    schedule_profile_key,
++)
++
++if typing.TYPE_CHECKING:
++    import collections.abc
++
++    from vibeqc_compiler.common.schedule import ScheduleContract
++
++_HOST_REGION_EFFECTS = {
++    "runtime.cuda.ks_xc_density_d2h": EffectKind.PURE,
++    "dft.CudaKsPlan.split_host_spin_density": EffectKind.PURE,
++    "dft.CudaKsPlan.host_unfused_xc": EffectKind.PURE,
++    "runtime.cuda.ks_xc_result_h2d": EffectKind.PURE,
++}
++
++_TOTAL_BYTES = 3 * 8
++_ERROR_BYTES = 4
++
++
++def _text(value: typing.Any, label: str) -> str:
++    if type(value) is not str or not value.strip():
++        raise ValueError(f"{label} must be a nonempty string")
++    return value
++
++
++def _device_space(ordinal: int) -> str:
++    if type(ordinal) is not int or ordinal < 0:
++        raise ValueError("grid/XC device ordinal must be a non-negative integer")
++    return f"device:{ordinal}"
++
++
++def _density_bytes(shape: GridXcCandidateShape) -> int:
++    if not isinstance(shape, GridXcCandidateShape):
++        raise TypeError("native KS XC ProgramIR requires GridXcCandidateShape")
++    return byte_product(8, shape.spins, shape.nao, shape.nao)
++
++
++def native_ks_host_unfused_xc_program(
++    shape: GridXcCandidateShape,
++    *,
++    scientific: GridXcScientificIdentity,
++    density_identity: str,
++    host_xc_identity: str,
++    transfer_identity: str,
++    device_ordinal: int = 0,
++) -> ProgramIR:
++    """Describe the current host-unfused `CudaKsPlan::stage_xc` boundary."""
++
++    if not isinstance(scientific, GridXcScientificIdentity):
++        raise TypeError("native KS XC source requires scientific identity")
++    if not isinstance(shape, GridXcCandidateShape):
++        raise TypeError("native KS XC source requires candidate shape")
++    if (
++        shape.spins != (2 if scientific.spin == "polarized" else 1)
++        or scientific.observable != "potential"
++        or scientific.density_route != "density_matrix"
++        or shape.jet_components != len(scientific.jet_outputs)
++    ):
++        raise ValueError("native KS XC source scientific domain mismatch")
++    density_identity = _text(density_identity, "KS density identity")
++    host_xc_identity = _text(host_xc_identity, "host XC identity")
++    transfer_identity = _text(transfer_identity, "transfer identity")
++    device = _device_space(device_ordinal)
++    density_bytes = _density_bytes(shape)
++    matrix_bytes = byte_product(8, shape.nao, shape.nao)
++    topology = {
++        "scientific": scientific.identity,
++        "shape": grid_xc_shape_identity(shape),
++        "npoint": shape.npoint,
++        "tile_points": shape.tile_points,
++        "nao": shape.nao,
++        "spins": shape.spins,
++    }
++
++    # Device inputs/outputs are boundary tokens. Their physical owners live in
++    # the prepared KS arena, so ProgramIR does not charge those owners again.
++    buffers = [
++        ProgramBuffer("density_device", 0, device),
++        ProgramBuffer("density_host", density_bytes),
++    ]
++    calls = [
++        PlanCall(
++            "download_density",
++            "runtime.cuda.ks_xc_density_d2h",
++            canonical_hash(
++                {
++                    "transfer": transfer_identity,
++                    "direction": "d2h",
++                    "bytes": density_bytes,
++                    "topology": topology,
++                }
++            ),
++            ("density_device",),
++            ("density_host",),
++        )
++    ]
++    host_density_reads: tuple[str, ...] = ("density_host",)
++    if shape.spins == 2:
++        buffers.extend(
++            (
++                ProgramBuffer("alpha_host", matrix_bytes),
++                ProgramBuffer("beta_host", matrix_bytes),
++            )
++        )
++        calls.append(
++            PlanCall(
++                "split_spin_density",
++                "dft.CudaKsPlan.split_host_spin_density",
++                canonical_hash(
++                    {
++                        "density": density_identity,
++                        "topology": topology,
++                    }
++                ),
++                ("density_host",),
++                ("alpha_host", "beta_host"),
++            )
++        )
++        host_density_reads = ("alpha_host", "beta_host")
++
++    buffers.extend(
++        (
++            ProgramBuffer("vxc_host", density_bytes),
++            ProgramBuffer("totals_host", _TOTAL_BYTES),
++            ProgramBuffer("error_host", _ERROR_BYTES),
++            ProgramBuffer("vxc_device", 0, device),
++            ProgramBuffer("totals_device", 0, device),
++            ProgramBuffer("error_device", 0, device),
++        )
++    )
++    calls.extend(
++        (
++            PlanCall(
++                "host_xc_vxc",
++                "dft.CudaKsPlan.host_unfused_xc",
++                canonical_hash(
++                    {
++                        "xc": host_xc_identity,
++                        "density": density_identity,
++                        "topology": topology,
++                    }
++                ),
++                host_density_reads,
++                ("vxc_host", "totals_host", "error_host"),
++            ),
++            PlanCall(
++                "upload_xc",
++                "runtime.cuda.ks_xc_result_h2d",
++                canonical_hash(
++                    {
++                        "transfer": transfer_identity,
++                        "direction": "h2d",
++                        "bytes": density_bytes + _TOTAL_BYTES + _ERROR_BYTES,
++                        "topology": topology,
++                    }
++                ),
++                ("vxc_host", "totals_host", "error_host"),
++                ("vxc_device", "totals_device", "error_device"),
++            ),
++        )
++    )
++    return ProgramIR(
++        "cuda_ks_host_unfused_xc",
++        tuple(buffers),
++        ("density_device",),
++        tuple(calls),
++        ("vxc_device", "totals_device", "error_device"),
++    )
++
++
++@dataclass(frozen=True, slots=True)
++class NativeKsXcSource:
++    """DFT-owned source binding used to reconstruct, not relabel, an XC region.
++
++    ProgramIR remains method-neutral. The domain owner carries science and shape
++    separately and reconstructs the complete graph before attaching admission
++    records; matching just a supplied program digest is not sufficient.
++    """
++
++    shape: GridXcCandidateShape
++    scientific: GridXcScientificIdentity
++    density_identity: str
++    host_xc_identity: str
++    transfer_identity: str
++    device_ordinal: int = 0
++
++    def program(self) -> ProgramIR:
++        return native_ks_host_unfused_xc_program(
++            self.shape,
++            scientific=self.scientific,
++            density_identity=self.density_identity,
++            host_xc_identity=self.host_xc_identity,
++            transfer_identity=self.transfer_identity,
++            device_ordinal=self.device_ordinal,
++        )
++
++
++def _validate_source_admissions(
++    program: ProgramIR,
++    source: NativeKsXcSource,
++    host: GridXcCandidateAssessment,
++    device: GridXcCandidateAssessment,
++) -> None:
++    if not isinstance(source, NativeKsXcSource):
++        raise TypeError("native KS XC binding requires a typed source")
++    if program.identity != source.program().identity:
++        raise ValueError("native KS XC source program mismatch")
++    scientific = source.scientific
++    expected_target = canonical_hash(
++        {"backend": "cuda", "architecture": scientific.architecture}
++    )
++    for assessment in (host, device):
++        contract = assessment.schedule_contract
++        provenance = dict(contract.provenance)
++        if (
++            contract.consumer != "dft.grid_xc"
++            or assessment.schedule_hash != contract.schedule_hash
++            or contract.workload_hash != scientific.identity
++            or contract.profile_key != schedule_profile_key(scientific)
++            or contract.target_hash != expected_target
++            or provenance.get("candidate_domain")
++            != grid_xc_domain_identity(source.shape)
++        ):
++            raise ValueError("grid/XC admission source provenance mismatch")
++    if dict(host.schedule_contract.provenance).get(
++        "candidate_shape"
++    ) != grid_xc_shape_identity(source.shape):
++        raise ValueError("host grid/XC admission source shape mismatch")
++    if (
++        host.schedule_contract.precision_schedule_hash
++        != device.schedule_contract.precision_schedule_hash
++    ):
++        raise ValueError("grid/XC admission source precision mismatch")
++
++
++def native_ks_xc_region(program: ProgramIR) -> ProgramRegion:
++    """Return the exact `stage_xc` region replaceable by resident device XC."""
++
++    return derive_program_region(
++        program,
++        name="cuda-ks-stage-xc",
++        start_call="download_density",
++        end_call="upload_xc",
++        effects=_HOST_REGION_EFFECTS,
++    )
++
++
++def _schedule_name(assessment: GridXcCandidateAssessment) -> str:
++    if not isinstance(assessment, GridXcCandidateAssessment):
++        raise TypeError("grid/XC region binding requires candidate assessments")
++    provenance = dict(assessment.schedule_contract.provenance)
++    name = provenance.get("domain_schedule")
++    if name not in ("host_unfused", "device_fused"):
++        raise ValueError("grid/XC assessment has an unknown execution schedule")
++    if assessment.legal != assessment.schedule_contract.legal:
++        raise ValueError("grid/XC assessment legality disagrees with ScheduleContract")
++    return name
++
++
++def _endpoint_seconds(
++    measurements: collections.abc.Mapping[str, float | None] | None,
++    name: str,
++) -> float | None:
++    if measurements is None or name not in measurements:
++        return None
++    value = measurements[name]
++    if value is None:
++        return None
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise TypeError("grid/XC endpoint timing must be a positive finite number")
++    numeric = float(value)
++    if not math.isfinite(numeric) or numeric <= 0.0:
++        raise ValueError("grid/XC endpoint timing must be a positive finite number")
++    return numeric
++
++
++def _host_region_resources(program: ProgramIR) -> ScheduleResources:
++    """Project only ProgramIR-visible bridge storage, not the prepared KS arena."""
++
++    peaks = program.storage_analysis().peak_by_space
++    host_bytes = peaks.get("pageable", 0) + peaks.get("pinned", 0)
++    device_bytes = sum(
++        value for space, value in peaks.items() if space.startswith("device:")
++    )
++    return ScheduleResources(
++        host_bytes=host_bytes,
++        device_bytes=device_bytes,
++    )
++
++
++def _host_bridge_traffic(program: ProgramIR) -> int:
++    """Exact transfer payload from `stage_xc`, excluding CPU-internal traffic."""
++
++    buffers = {buffer.name: buffer for buffer in program.buffers}
++    return (
++        buffers["density_host"].bytes
++        + buffers["vxc_host"].bytes
++        + buffers["totals_host"].bytes
++        + buffers["error_host"].bytes
++    )
++
++
++def _region_schedule(
++    assessment: GridXcCandidateAssessment,
++    region: ProgramRegion,
++    *,
++    endpoint_seconds: float | None,
++    resources: ScheduleResources | None = None,
++    semantic_traffic_bytes: int | None = None,
++) -> ScheduleContract:
++    contract = assessment.schedule_contract
++    provenance = dict(contract.provenance)
++    provenance["program_region"] = region.identity
++    provenance["region_source_consumer"] = contract.consumer
++    profitability = replace(
++        contract.profitability,
++        endpoint_seconds=endpoint_seconds,
++        **(
++            {}
++            if semantic_traffic_bytes is None
++            else {"semantic_traffic_bytes": semantic_traffic_bytes}
++        ),
++    )
++    return replace(
++        contract,
++        consumer=region.consumer,
++        resources=contract.resources if resources is None else resources,
++        profitability=profitability,
++        provenance=tuple(provenance.items()),
++    )
++
++
++@dataclass(frozen=True, slots=True)
++class GridXcRegionCandidates:
++    """Host bridge and resident-device implementations of one native KS region."""
++
++    region: ProgramRegion
++    host_unfused: ProgramRegionCandidate
++    device_fused: ProgramRegionCandidate
++
++    def __post_init__(self) -> None:
++        if self.host_unfused.region != self.region:
++            raise ValueError("host grid/XC candidate is bound to another region")
++        if self.device_fused.region != self.region:
++            raise ValueError("device grid/XC candidate is bound to another region")
++
++    @property
++    def all(self) -> tuple[ProgramRegionCandidate, ProgramRegionCandidate]:
++        return self.host_unfused, self.device_fused
++
++
++def bind_native_ks_xc_region_candidates(
++    program: ProgramIR,
++    *,
++    source: NativeKsXcSource,
++    host_unfused: GridXcCandidateAssessment,
++    device_fused: GridXcCandidateAssessment,
++    device_xc_identity: str,
++    endpoint_seconds: collections.abc.Mapping[str, float | None] | None = None,
++) -> GridXcRegionCandidates:
++    """Bind existing DFT schedule evidence to one exact native KS XC region."""
++
++    device_xc_identity = _text(device_xc_identity, "device XC executable identity")
++    if _schedule_name(host_unfused) != "host_unfused":
++        raise ValueError("host grid/XC assessment is not host_unfused")
++    if _schedule_name(device_fused) != "device_fused":
++        raise ValueError("device grid/XC assessment is not device_fused")
++    if not host_unfused.schedule_contract.fallback:
++        raise ValueError("host_unfused must remain the grid/XC fallback")
++    if device_fused.schedule_contract.fallback:
++        raise ValueError("device_fused must not be marked as fallback")
++    if not host_unfused.legal:
++        raise ValueError("host_unfused fallback must be legal")
++
++    _validate_source_admissions(program, source, host_unfused, device_fused)
++    region = native_ks_xc_region(program)
++    host_schedule = _region_schedule(
++        host_unfused,
++        region,
++        endpoint_seconds=_endpoint_seconds(endpoint_seconds, "host_unfused"),
++        resources=_host_region_resources(program),
++        semantic_traffic_bytes=_host_bridge_traffic(program),
++    )
++    device_schedule = _region_schedule(
++        device_fused,
++        region,
++        endpoint_seconds=_endpoint_seconds(endpoint_seconds, "device_fused"),
++    )
++    host_candidate = ProgramRegionCandidate(
++        name="host_unfused",
++        region=region,
++        schedule=host_schedule,
++        backend="cuda+host",
++    )
++    device_candidate = ProgramRegionCandidate(
++        name="device_fused",
++        region=region,
++        schedule=device_schedule,
++        backend="cuda",
++        provider="dft.CudaXcPlan.device_fused",
++        implementation_identity=device_xc_identity,
++    )
++    return GridXcRegionCandidates(region, host_candidate, device_candidate)
++
++
++@dataclass(frozen=True, slots=True)
++class GridXcRegionSelection:
++    """Selected executable candidate plus the resulting ProgramIR."""
++
++    candidate: ProgramRegionCandidate
++    program: ProgramIR
++
++
++def select_native_ks_xc_region_program(
++    program: ProgramIR,
++    *,
++    source: NativeKsXcSource,
++    host_unfused: GridXcCandidateAssessment,
++    device_fused: GridXcCandidateAssessment,
++    device_xc_identity: str,
++    endpoint_seconds: collections.abc.Mapping[str, float | None] | None = None,
++    minimum_speedup: float = 1.0,
++    endpoint_noise_fraction: float = 0.01,
++) -> GridXcRegionSelection:
++    """Select and materialize one measured native-KS XC implementation."""
++
++    candidates = bind_native_ks_xc_region_candidates(
++        program,
++        source=source,
++        host_unfused=host_unfused,
++        device_fused=device_fused,
++        device_xc_identity=device_xc_identity,
++        endpoint_seconds=endpoint_seconds,
++    )
++    selected = select_program_region_candidate(
++        candidates.all,
++        minimum_speedup=minimum_speedup,
++        endpoint_noise_fraction=endpoint_noise_fraction,
++    )
++    return GridXcRegionSelection(
++        selected,
++        apply_program_region_candidate(program, selected),
++    )
+diff --git a/python/vibeqc_compiler/dft/xc_schedule.py b/python/vibeqc_compiler/dft/xc_schedule.py
+index 7435cb24..7f5a12fe 100644
+--- a/python/vibeqc_compiler/dft/xc_schedule.py
++++ b/python/vibeqc_compiler/dft/xc_schedule.py
+@@ -276,6 +276,25 @@ class GridXcCandidateShape:
+             )
+ 
+ 
++def grid_xc_shape_identity(shape: GridXcCandidateShape) -> str:
++    """Identity of the exact candidate-local resource and tiling evidence."""
++    if not isinstance(shape, GridXcCandidateShape):
++        raise TypeError("grid/XC shape identity requires GridXcCandidateShape")
++    return canonical_hash(asdict(shape))
++
++
++def grid_xc_domain_identity(shape: GridXcCandidateShape) -> str:
++    """Common workload domain, excluding candidate-local tiling and resources."""
++    if not isinstance(shape, GridXcCandidateShape):
++        raise TypeError("grid/XC domain identity requires GridXcCandidateShape")
++    return canonical_hash(
++        {
++            name: getattr(shape, name)
++            for name in ("npoint", "nao", "max_active_ao", "spins", "jet_components")
++        }
++    )
++
++
+ @dataclass(frozen=True)
+ class GridXcScheduleCandidate:
+     """One executable DFT schedule paired with its own measured/planned shape.
+@@ -569,6 +588,8 @@ def assess_grid_xc_schedule(
+         ),
+         provenance=(
+             ("domain_schedule", resolved.name),
++            ("candidate_shape", grid_xc_shape_identity(shape)),
++            ("candidate_domain", grid_xc_domain_identity(shape)),
+             ("precision_contract", "common.precision"),
+             ("lifetime_analysis", "common.storage"),
+             ("resource_admission", "common.schedule"),
+diff --git a/tests/python/test_dft_xc_program_region.py b/tests/python/test_dft_xc_program_region.py
+new file mode 100644
+index 00000000..58b5c696
+--- /dev/null
++++ b/tests/python/test_dft_xc_program_region.py
+@@ -0,0 +1,483 @@
++"""ProgramIR binding for the real native CUDA-KS XC staging routes."""
++
++from __future__ import annotations
++
++import typing
++from dataclasses import replace
++
++import pytest
++from vibeqc_compiler.dft.xc_program import (
++    NativeKsXcSource,
++    bind_native_ks_xc_region_candidates,
++    native_ks_xc_region,
++    select_native_ks_xc_region_program,
++)
++from vibeqc_compiler.dft.xc_schedule import (
++    DEVICE_FUSED,
++    HOST_UNFUSED,
++    GridXcCandidateLimits,
++    GridXcCandidateShape,
++    GridXcScientificIdentity,
++    assess_grid_xc_schedule,
++)
++
++if typing.TYPE_CHECKING:
++    from vibeqc_compiler.common.program import ProgramIR
++    from vibeqc_compiler.dft.xc_schedule import (
++        GridXcCandidateAssessment,
++        GridXcExecutionSchedule,
++    )
++
++
++def _shape(*, spins: int = 2) -> GridXcCandidateShape:
++    return GridXcCandidateShape(
++        npoint=48,
++        tile_points=16,
++        nao=7,
++        max_active_ao=7,
++        spins=spins,
++        jet_components=4,
++        device_workspace_bytes=1 << 20,
++        generated_source_bytes=8192,
++    )
++
++
++def _limits() -> GridXcCandidateLimits:
++    return GridXcCandidateLimits(
++        device_bytes=1 << 30,
++        live_values=1 << 28,
++        source_bytes=1 << 20,
++    )
++
++
++def _scientific(*, spins: int = 2) -> GridXcScientificIdentity:
++    return GridXcScientificIdentity(
++        architecture="sm_120",
++        functional="PBE",
++        functional_identity="pbe-science-v1",
++        ingredients=("rho", "gradient", "sigma"),
++        jet_outputs=((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)),
++        grid_identity="grid-v1",
++        grid_model="grid-model-v1",
++        screening_identity=None,
++        precision="fp64",
++        spin="polarized" if spins == 2 else "unpolarized",
++        observable="potential",
++        density_route="density_matrix",
++        source_identity="xc-source-v1",
++    )
++
++
++def _assessment(
++    schedule: GridXcExecutionSchedule,
++    *,
++    device_xc_available: bool = True,
++    spins: int = 2,
++) -> GridXcCandidateAssessment:
++    return assess_grid_xc_schedule(
++        schedule,
++        _shape(spins=spins),
++        _limits(),
++        device_xc_available=device_xc_available,
++        observable="potential",
++        functional="PBE",
++        scientific=_scientific(spins=spins),
++    )
++
++
++def _source(*, spins: int = 2) -> NativeKsXcSource:
++    return NativeKsXcSource(
++        _shape(spins=spins),
++        _scientific(spins=spins),
++        density_identity="cuda-ks-density-v1",
++        host_xc_identity="host-pbe-v1",
++        transfer_identity="cuda-ks-xc-transfer-v1",
++    )
++
++
++def _program(*, spins: int = 2) -> ProgramIR:
++    return _source(spins=spins).program()
++
++
++def test_host_unfused_uks_program_matches_cuda_ks_stage_xc_boundary() -> None:
++    program = _program(spins=2)
++    assert tuple(call.name for call in program.calls) == (
++        "download_density",
++        "split_spin_density",
++        "host_xc_vxc",
++        "upload_xc",
++    )
++    assert tuple(call.provider for call in program.calls) == (
++        "runtime.cuda.ks_xc_density_d2h",
++        "dft.CudaKsPlan.split_host_spin_density",
++        "dft.CudaKsPlan.host_unfused_xc",
++        "runtime.cuda.ks_xc_result_h2d",
++    )
++    buffers = {buffer.name: buffer for buffer in program.buffers}
++    matrix_bytes = 8 * 7 * 7
++    density_bytes = 2 * matrix_bytes
++    assert buffers["density_device"].bytes == 0
++    assert buffers["density_host"].bytes == density_bytes
++    assert buffers["alpha_host"].bytes == matrix_bytes
++    assert buffers["beta_host"].bytes == matrix_bytes
++    assert buffers["vxc_host"].bytes == density_bytes
++    assert buffers["totals_host"].bytes == 24
++    assert buffers["error_host"].bytes == 4
++    assert buffers["density_device"].space == "device:0"
++    assert buffers["density_host"].space == "pageable"
++    assert program.outputs == ("vxc_device", "totals_device", "error_device")
++
++
++def test_host_unfused_rks_has_no_artificial_spin_split() -> None:
++    program = _program(spins=1)
++    assert tuple(call.name for call in program.calls) == (
++        "download_density",
++        "host_xc_vxc",
++        "upload_xc",
++    )
++    assert "alpha_host" not in {buffer.name for buffer in program.buffers}
++    assert "beta_host" not in {buffer.name for buffer in program.buffers}
++    assert program.calls[1].reads == ("density_host",)
++
++
++def test_native_ks_region_exposes_density_to_xc_view_boundary() -> None:
++    region = native_ks_xc_region(_program())
++    assert region.reads == ("density_device",)
++    assert region.writes == ("vxc_device", "totals_device", "error_device")
++    assert region.internal_buffers == (
++        "density_host",
++        "alpha_host",
++        "beta_host",
++        "vxc_host",
++        "totals_host",
++        "error_host",
++    )
++
++
++def test_host_region_cost_counts_exact_cuda_ks_bridge_payload() -> None:
++    program = _program()
++    candidates = bind_native_ks_xc_region_candidates(
++        program,
++        host_unfused=_assessment(HOST_UNFUSED),
++        device_fused=_assessment(DEVICE_FUSED),
++        source=_source(),
++        device_xc_identity="cuda-xc-plan-pbe-v1",
++    )
++    buffers = {buffer.name: buffer.bytes for buffer in program.buffers}
++    expected = (
++        buffers["density_host"]
++        + buffers["vxc_host"]
++        + buffers["totals_host"]
++        + buffers["error_host"]
++    )
++    profitability = candidates.host_unfused.schedule.profitability
++    assert profitability.semantic_traffic_bytes == expected
++    assert expected == 2 * (2 * 7 * 7 * 8) + 24 + 4
++    assert candidates.host_unfused.schedule.resources.host_bytes == expected
++
++
++def test_measured_device_fused_route_replaces_complete_host_region() -> None:
++    program = _program()
++    selected = select_native_ks_xc_region_program(
++        program,
++        host_unfused=_assessment(HOST_UNFUSED),
++        device_fused=_assessment(DEVICE_FUSED),
++        source=_source(),
++        device_xc_identity="cuda-xc-plan-pbe-v1",
++        endpoint_seconds={
++            "host_unfused": 1.0,
++            "device_fused": 0.75,
++        },
++        minimum_speedup=1.02,
++    )
++    assert selected.candidate.name == "device_fused"
++    assert selected.candidate.provider == "dft.CudaXcPlan.device_fused"
++    assert selected.candidate.backend == "cuda"
++    assert tuple(call.name for call in selected.program.calls) == ("device_fused",)
++    assert selected.program.calls[0].reads == ("density_device",)
++    assert selected.program.calls[0].writes == (
++        "vxc_device",
++        "totals_device",
++        "error_device",
++    )
++    assert tuple(buffer.name for buffer in selected.program.buffers) == (
++        "density_device",
++        "vxc_device",
++        "totals_device",
++        "error_device",
++    )
++    provenance = dict(selected.candidate.schedule.provenance)
++    assert provenance["region_source_consumer"] == "dft.grid_xc"
++    assert provenance["domain_schedule"] == "device_fused"
++
++
++def test_missing_endpoint_evidence_keeps_exact_host_fallback() -> None:
++    program = _program()
++    selected = select_native_ks_xc_region_program(
++        program,
++        host_unfused=_assessment(HOST_UNFUSED),
++        device_fused=_assessment(DEVICE_FUSED),
++        source=_source(),
++        device_xc_identity="cuda-xc-plan-pbe-v1",
++        endpoint_seconds=None,
++        minimum_speedup=1.02,
++    )
++    assert selected.candidate.name == "host_unfused"
++    assert selected.program is program
++
++
++def test_unavailable_device_xc_cannot_be_promoted_by_fast_timing() -> None:
++    program = _program()
++    selected = select_native_ks_xc_region_program(
++        program,
++        host_unfused=_assessment(HOST_UNFUSED),
++        device_fused=_assessment(DEVICE_FUSED, device_xc_available=False),
++        source=_source(),
++        device_xc_identity="cuda-xc-plan-pbe-v1",
++        endpoint_seconds={
++            "host_unfused": 1.0,
++            "device_fused": 0.1,
++        },
++        minimum_speedup=1.02,
++    )
++    assert selected.candidate.name == "host_unfused"
++    assert selected.program is program
++
++
++def test_device_executable_identity_invalidates_replacement_program() -> None:
++    program = _program()
++    kwargs = {
++        "program": program,
++        "host_unfused": _assessment(HOST_UNFUSED),
++        "device_fused": _assessment(DEVICE_FUSED),
++        "endpoint_seconds": {
++            "host_unfused": 1.0,
++            "device_fused": 0.75,
++        },
++        "minimum_speedup": 1.02,
++    }
++    first = select_native_ks_xc_region_program(
++        source=_source(),
++        device_xc_identity="cuda-xc-plan-pbe-v1",
++        **kwargs,
++    )
++    second = select_native_ks_xc_region_program(
++        source=_source(),
++        device_xc_identity="cuda-xc-plan-pbe-v2",
++        **kwargs,
++    )
++    assert first.program.identity != second.program.identity
++    assert first.candidate.replacement_identity != second.candidate.replacement_identity
++
++
++@pytest.mark.parametrize(
++    "timing",
++    [
++        {"host_unfused": 0.0, "device_fused": 0.5},
++        {"host_unfused": 1.0, "device_fused": -1.0},
++        {"host_unfused": 1.0, "device_fused": float("inf")},
++        {"host_unfused": 1.0, "device_fused": True},
++    ],
++)
++def test_region_binding_rejects_invalid_endpoint_timing(
++    timing: typing.Any,
++) -> None:
++    with pytest.raises((TypeError, ValueError), match="endpoint timing"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            host_unfused=_assessment(HOST_UNFUSED),
++            device_fused=_assessment(DEVICE_FUSED),
++            source=_source(),
++            device_xc_identity="cuda-xc-plan-pbe-v1",
++            endpoint_seconds=timing,
++        )
++
++
++def test_region_binding_rejects_swapped_schedule_assessments() -> None:
++    with pytest.raises(ValueError, match="host_unfused"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            host_unfused=_assessment(DEVICE_FUSED),
++            device_fused=_assessment(HOST_UNFUSED),
++            source=_source(),
++            device_xc_identity="cuda-xc-plan-pbe-v1",
++        )
++
++
++def test_region_binding_rejects_inconsistent_assessment_legality() -> None:
++    device = _assessment(DEVICE_FUSED)
++    inconsistent = replace(device, legal=False)
++    with pytest.raises(ValueError, match="legality disagrees"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            host_unfused=_assessment(HOST_UNFUSED),
++            device_fused=inconsistent,
++            source=_source(),
++            device_xc_identity="cuda-xc-plan-pbe-v1",
++        )
++
++
++def test_host_fallback_must_remain_legal() -> None:
++    host = _assessment(HOST_UNFUSED)
++    illegal_host = replace(
++        host,
++        legal=False,
++        reasons=("forced test rejection",),
++        schedule_contract=replace(
++            host.schedule_contract,
++            legal=False,
++            reasons=("forced test rejection",),
++        ),
++    )
++    with pytest.raises(ValueError, match="fallback must be legal"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            host_unfused=illegal_host,
++            device_fused=_assessment(DEVICE_FUSED),
++            source=_source(),
++            device_xc_identity="cuda-xc-plan-pbe-v1",
++        )
++
++
++@pytest.mark.parametrize("assessment_spins", [1])
++def test_region_rejects_cross_spin_admission(assessment_spins: int) -> None:
++    with pytest.raises(ValueError, match="source provenance"):
++        select_native_ks_xc_region_program(
++            _program(spins=2),
++            source=_source(spins=2),
++            host_unfused=_assessment(HOST_UNFUSED, spins=assessment_spins),
++            device_fused=_assessment(DEVICE_FUSED, spins=assessment_spins),
++            device_xc_identity="rks-plan",
++            endpoint_seconds={"host_unfused": 1.0, "device_fused": 0.1},
++        )
++
++
++@pytest.mark.parametrize("field,value", [("nao", 8), ("npoint", 64)])
++def test_region_rejects_other_shape_admission(field: str, value: int) -> None:
++    shape = replace(_shape(), **{field: value})
++    assessments = tuple(
++        assess_grid_xc_schedule(
++            schedule,
++            shape,
++            _limits(),
++            device_xc_available=True,
++            observable="potential",
++            functional="PBE",
++            scientific=_scientific(),
++        )
++        for schedule in (HOST_UNFUSED, DEVICE_FUSED)
++    )
++    with pytest.raises(ValueError, match="source provenance"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            source=_source(),
++            host_unfused=assessments[0],
++            device_fused=assessments[1],
++            device_xc_identity="other-shape-plan",
++        )
++
++
++@pytest.mark.parametrize(
++    "field,value",
++    [
++        ("grid_identity", "other-grid"),
++        ("source_identity", "other-source"),
++        ("functional_identity", "other-functional"),
++        ("architecture", "sm_90"),
++    ],
++)
++def test_region_rejects_other_scientific_admission(field: str, value: str) -> None:
++    science = replace(_scientific(), **{field: value})
++    assessments = tuple(
++        assess_grid_xc_schedule(
++            schedule,
++            _shape(),
++            _limits(),
++            device_xc_available=True,
++            observable="potential",
++            functional="PBE",
++            scientific=science,
++        )
++        for schedule in (HOST_UNFUSED, DEVICE_FUSED)
++    )
++    with pytest.raises(ValueError, match="source provenance"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            source=_source(),
++            host_unfused=assessments[0],
++            device_fused=assessments[1],
++            device_xc_identity="other-science-plan",
++        )
++
++
++def test_region_rejects_missing_scientific_admission() -> None:
++    assessments = tuple(
++        assess_grid_xc_schedule(
++            schedule,
++            _shape(),
++            _limits(),
++            device_xc_available=True,
++            observable="potential",
++            functional="PBE",
++        )
++        for schedule in (HOST_UNFUSED, DEVICE_FUSED)
++    )
++    with pytest.raises(ValueError, match="source provenance"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            source=_source(),
++            host_unfused=assessments[0],
++            device_fused=assessments[1],
++            device_xc_identity="unbound-plan",
++        )
++
++
++@pytest.mark.parametrize(
++    "field", ["density_identity", "host_xc_identity", "transfer_identity"]
++)
++def test_region_rejects_stale_source_binding(field: str) -> None:
++    source = replace(_source(), **{field: "changed-identity"})
++    with pytest.raises(ValueError, match="source program"):
++        bind_native_ks_xc_region_candidates(
++            _program(),
++            source=source,
++            host_unfused=_assessment(HOST_UNFUSED),
++            device_fused=_assessment(DEVICE_FUSED),
++            device_xc_identity="device-plan",
++        )
++
++
++def test_region_rejects_reconstructed_graph_with_stale_source() -> None:
++    program = _program()
++    calls = list(program.calls)
++    calls[0] = replace(calls[0], identity="other-transfer")
++    modified = replace(program, calls=tuple(calls))
++    with pytest.raises(ValueError, match="source program"):
++        bind_native_ks_xc_region_candidates(
++            modified,
++            source=_source(),
++            host_unfused=_assessment(HOST_UNFUSED),
++            device_fused=_assessment(DEVICE_FUSED),
++            device_xc_identity="device-plan",
++        )
++
++
++def test_region_accepts_candidate_local_device_tiling() -> None:
++    device = assess_grid_xc_schedule(
++        replace(DEVICE_FUSED, point_tile=8),
++        replace(_shape(), tile_points=8),
++        _limits(),
++        device_xc_available=True,
++        observable="potential",
++        functional="PBE",
++        scientific=_scientific(),
++    )
++    selected = select_native_ks_xc_region_program(
++        _program(),
++        source=_source(),
++        host_unfused=_assessment(HOST_UNFUSED),
++        device_fused=device,
++        device_xc_identity="retiled-plan",
++        endpoint_seconds={"host_unfused": 1.0, "device_fused": 0.75},
++    )
++    assert selected.candidate.name == "device_fused"

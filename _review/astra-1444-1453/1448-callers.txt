@@ -1,0 +1,22 @@
+python/vibeqc_compiler/dft/xc_program.py:76:def native_ks_host_unfused_xc_program(
+python/vibeqc_compiler/dft/xc_program.py:226:        return native_ks_host_unfused_xc_program(
+python/vibeqc_compiler/dft/xc_program.py:390:def bind_native_ks_xc_region_candidates(
+python/vibeqc_compiler/dft/xc_program.py:452:def select_native_ks_xc_region_program(
+python/vibeqc_compiler/dft/xc_program.py:465:    candidates = bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:159:    candidates = bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:181:    selected = select_native_ks_xc_region_program(
+tests/python/test_dft_xc_program_region.py:216:    selected = select_native_ks_xc_region_program(
+tests/python/test_dft_xc_program_region.py:231:    selected = select_native_ks_xc_region_program(
+tests/python/test_dft_xc_program_region.py:259:    first = select_native_ks_xc_region_program(
+tests/python/test_dft_xc_program_region.py:264:    second = select_native_ks_xc_region_program(
+tests/python/test_dft_xc_program_region.py:286:        bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:298:        bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:311:        bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:333:        bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:345:        select_native_ks_xc_region_program(
+tests/python/test_dft_xc_program_region.py:371:        bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:404:        bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:426:        bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:441:        bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:456:        bind_native_ks_xc_region_candidates(
+tests/python/test_dft_xc_program_region.py:475:    selected = select_native_ks_xc_region_program(
