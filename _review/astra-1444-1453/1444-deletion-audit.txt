@@ -1,0 +1,5 @@
+src/xtb/native/src/backends/cuda/gfn2_d4.cu: deletion-only token subsequence verified; 42665 -> 23443 tokens
+src/xtb/native/src/backends/cuda/gfn2_d4.cuh: deletion-only token subsequence verified; 2265 -> 1859 tokens
+All 45 retained device kernels/helpers are token-identical to master
+Deleted device functions: atm_energy_kernel, atm_energy_split_kernel, atm_gradient_kernel, atm_gradient_split_kernel, atm_pair_from_flat, build_d4_coordination_kernel, build_d4_geometry_pairs_kernel, cache_preflight_kernel, capture_geometry_sequence_kernel, coordination_vjp_kernel, energy_kernel, geometry_sequence_is_active, load_geometry_system, pair_charge_derivative, pair_index, potential_kernel, prepare_weights_kernel, publish_d4_geometry_generation_kernel, publish_d4_geometry_kernel, scc_activity_preflight_kernel, scc_cache_preflight_kernel, scc_energy_kernel, scc_potential_kernel, scc_prepare_weights_kernel, system_for_pair, two_body_cn_adjoint_kernel, two_body_gradient_kernel
+No retained production references to retired dense API or cache type
