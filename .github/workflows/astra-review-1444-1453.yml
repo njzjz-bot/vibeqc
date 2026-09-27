@@ -1,0 +1,80 @@
+name: Astra review 1444-1453
+on:
+  push:
+    branches: [review/astra-1444-1453-20260927]
+    paths: [.github/workflows/astra-review-1444-1453.yml]
+permissions:
+  contents: write
+concurrency:
+  group: astra-review-1444-1453
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Inspect pinned PR integration without changing upstream branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/jinzhezenggroup/vibeqc.git
+          git fetch --no-tags upstream master \
+            +refs/pull/1444/head:refs/remotes/upstream/pr-1444 \
+            +refs/pull/1448/head:refs/remotes/upstream/pr-1448 \
+            +refs/pull/1452/head:refs/remotes/upstream/pr-1452 \
+            +refs/pull/1453/head:refs/remotes/upstream/pr-1453
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          def git(*args, check=True):
+              return subprocess.run(['git', *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=check)
+          expected = {
+              1444: '155e0b0ac50b5279a35846379f8fa7fb5fb610c3',
+              1448: '1434916287df7c2ce1ceb42c4adf0d48fe0529c0',
+              1452: '0f03dd5993bd7dcc0e58b20afdf6cae57df815df',
+              1453: '344b6fa480b078c1fcd7a7298dd7c9fca716bd97',
+          }
+          out = pathlib.Path('_review/astra-1444-1453')
+          out.mkdir(parents=True, exist_ok=True)
+          master = git('rev-parse', 'upstream/master').stdout.strip()
+          summary = {'master': master, 'prs': {}}
+          for number, pinned in expected.items():
+              head = git('rev-parse', f'upstream/pr-{number}').stdout.strip()
+              if head != pinned:
+                  summary['prs'][str(number)] = {'head': head, 'error': 'head moved; not inspected'}
+                  continue
+              base = git('merge-base', head, master).stdout.strip()
+              changed = git('diff', '--name-only', base, head).stdout.splitlines()
+              upstream_changed = git('diff', '--name-only', base, master).stdout.splitlines()
+              overlap = sorted(set(changed) & set(upstream_changed))
+              merge = git('merge-tree', '--write-tree', '--messages', head, master, check=False)
+              if merge.returncode not in (0, 1):
+                  raise RuntimeError(merge.stdout)
+              tree = merge.stdout.splitlines()[0]
+              summary['prs'][str(number)] = {'head': head, 'base': base, 'tree': tree, 'clean': merge.returncode == 0, 'changed': changed, 'overlap': overlap}
+              report = [f'PR {number}\nhead {head}\nmaster {master}\nbase {base}\n', merge.stdout]
+              report.append('\nPR DIFF STAT\n' + git('diff', '--stat', base, head).stdout)
+              for path in overlap:
+                  report.extend([f'\n===== OVERLAP {path}: PR =====\n', git('diff', base, head, '--', path).stdout,
+                                 f'\n===== OVERLAP {path}: MASTER =====\n', git('diff', base, master, '--', path).stdout])
+                  merged = git('show', f'{tree}:{path}', check=False).stdout
+                  if '<<<<<<<' in merged:
+                      report.extend([f'\n===== CONFLICTED CONTENT {path} =====\n', merged])
+              (out / f'{number}-integration.txt').write_text(''.join(report))
+              (out / f'{number}-full.diff').write_text(git('diff', base, head).stdout)
+          (out / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          print(json.dumps(summary, indent=2))
+          for name in ('AGENTS.md', 'CONTRIBUTING.md'):
+              result = git('show', f'{master}:{name}', check=False)
+              if result.returncode == 0:
+                  (out / name).write_text(result.stdout)
+          PY
+          git config user.name 'ChatGPT'
+          git config user.email '48687836+njzjz-bot@users.noreply.github.com'
+          git add _review/astra-1444-1453
+          git commit -m 'chore(review): retain pinned integration diagnostics' -m 'Agent: ChatGPT' -m 'Model: GPT-6 Astra Pro'
+          git push origin HEAD:refs/heads/review/astra-1444-1453-20260927
