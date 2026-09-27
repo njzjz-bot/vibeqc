@@ -1,0 +1,976 @@
+diff --git a/docs/developer/electronic_structure_boundaries.md b/docs/developer/electronic_structure_boundaries.md
+index af0602aa..a8037d3a 100644
+--- a/docs/developer/electronic_structure_boundaries.md
++++ b/docs/developer/electronic_structure_boundaries.md
+@@ -17,7 +17,8 @@ The following directories are method-neutral owners:
+ They may depend on other shared chemistry, integral and runtime primitives, but
+ must not include concrete method implementation headers from:
+ 
+-- `src/scf/`
++- `src/scf/` (legacy mixed SCF/HF execution while the split is in progress)
++- `src/hf/`
+ - `src/dft/`
+ - `src/posthf/`
+ - `src/cc/`
+@@ -40,8 +41,8 @@ silently exempted:
+ They may disappear without a coordinated baseline edit; any additional
+ shared-to-method edge fails the check.
+ 
+-Post-HF still has 20 direct dependencies on SCF-owned driver, derivative,
+-provider and type headers. Those exact edges are also explicit shrink-only debt:
++Post-HF still has 16 direct dependencies on SCF-owned driver, derivative, and
++provider headers. Those exact edges are also explicit shrink-only debt:
+ removing one is accepted, while any new `src/posthf/ -> src/scf/` edge fails at
+ the include location. This prevents the shared-reference migration from moving
+ backward without pretending the current migration is already complete.
+@@ -50,6 +51,18 @@ This cross-method gate complements, rather than replaces, the more detailed
+ `tools/check_scf_structure.py` and `tools/check_compiler_structure.py`
+ ownership checks.
+ 
++### HF reference ownership
++
++The first explicit HF owner is `src/hf/reference.hpp`. The canonical restricted
++HF reference consumed by MP2/CC is method state, not SCF solver state. Legacy
++`scf::PhysicalReference` remains a compatibility alias while callers migrate,
++but new post-HF interfaces should name `hf::PhysicalReference` directly.
++
++The architecture checker treats `src/hf/` as a concrete method area. The
++remaining `src/scf/` tree is tracked as transitional ownership rather than
++being counted as HF-only; later slices can move concrete RHF/UHF execution out
++without changing the shared solver contracts.
++
+ The current Infrastructure A--F boundary mapping is:
+ 
+ | Slice | Shared owner | Enforced boundary |
+diff --git a/src/cc/rccsdt_force.cpp b/src/cc/rccsdt_force.cpp
+index 69cb58da..702bf7f1 100644
+--- a/src/cc/rccsdt_force.cpp
++++ b/src/cc/rccsdt_force.cpp
+@@ -171,7 +171,7 @@ struct RawHamiltonian {
+   std::vector<double> h, g, density, rotation;
+ };
+ 
+-RawHamiltonian raw_hamiltonian(const core::System& system, const scf::PhysicalReference& ref,
++RawHamiltonian raw_hamiltonian(const core::System& system, const hf::PhysicalReference& ref,
+                                std::size_t max_bytes) {
+   const auto n = ref.nbf;
+   const auto n2 = square(n), n4 = fourth(n);
+@@ -357,7 +357,7 @@ double minimum_symmetric_eigenvalue(std::vector<double> matrix, std::size_t n) {
+ }  // namespace
+ 
+ static RccsdtForcePlan plan_relaxed_rccsd_force_cpu(const core::System& system,
+-                                                    const scf::PhysicalReference& reference,
++                                                    const hf::PhysicalReference& reference,
+                                                     const Problem& p, const SolverResult& cc,
+                                                     std::size_t max_bytes, bool include_triples) {
+   const auto o = p.nocc, v = p.nvir, n = checked_add(o, v);
+@@ -478,19 +478,19 @@ static RccsdtForcePlan plan_relaxed_rccsd_force_cpu(const core::System& system,
+ }
+ 
+ RccsdtForcePlan plan_rccsd_force_cpu(const core::System& system,
+-                                     const scf::PhysicalReference& reference, const Problem& p,
++                                     const hf::PhysicalReference& reference, const Problem& p,
+                                      const SolverResult& cc, std::size_t max_bytes) {
+   return plan_relaxed_rccsd_force_cpu(system, reference, p, cc, max_bytes, false);
+ }
+ 
+ RccsdtForcePlan plan_rccsdt_force_cpu(const core::System& system,
+-                                      const scf::PhysicalReference& reference, const Problem& p,
++                                      const hf::PhysicalReference& reference, const Problem& p,
+                                       const SolverResult& cc, std::size_t max_bytes) {
+   return plan_relaxed_rccsd_force_cpu(system, reference, p, cc, max_bytes, true);
+ }
+ 
+ static RccsdtForceResult relaxed_rccsd_force_impl(
+-    const core::System& system, const scf::PhysicalReference& reference, const Problem& problem,
++    const core::System& system, const hf::PhysicalReference& reference, const Problem& problem,
+     const SolverResult& cc_result, std::span<const double> eps_o, std::span<const double> eps_v,
+     std::size_t max_bytes, bool include_triples, bool cuda_derivative, int device_id,
+     std::size_t derivative_stage_budget, double denominator_threshold) {
+@@ -741,7 +741,7 @@ static RccsdtForceResult relaxed_rccsd_force_impl(
+ }
+ 
+ RccsdtForceResult rccsd_force_cpu(const core::System& system,
+-                                  const scf::PhysicalReference& reference, const Problem& problem,
++                                  const hf::PhysicalReference& reference, const Problem& problem,
+                                   const SolverResult& cc_result, std::span<const double> eps_o,
+                                   std::span<const double> eps_v, std::size_t max_bytes) {
+   return relaxed_rccsd_force_impl(system, reference, problem, cc_result, eps_o, eps_v, max_bytes,
+@@ -749,7 +749,7 @@ RccsdtForceResult rccsd_force_cpu(const core::System& system,
+ }
+ 
+ RccsdtForceResult rccsd_force_cuda(const core::System& system,
+-                                   const scf::PhysicalReference& reference, const Problem& problem,
++                                   const hf::PhysicalReference& reference, const Problem& problem,
+                                    const SolverResult& cc_result, std::span<const double> eps_o,
+                                    std::span<const double> eps_v, std::size_t max_bytes,
+                                    int device_id, std::size_t derivative_stage_budget) {
+@@ -758,7 +758,7 @@ RccsdtForceResult rccsd_force_cuda(const core::System& system,
+ }
+ 
+ RccsdtForceResult rccsdt_force_cpu(const core::System& system,
+-                                   const scf::PhysicalReference& reference, const Problem& problem,
++                                   const hf::PhysicalReference& reference, const Problem& problem,
+                                    const SolverResult& cc_result, std::span<const double> eps_o,
+                                    std::span<const double> eps_v, std::size_t max_bytes,
+                                    double denominator_threshold) {
+@@ -767,7 +767,7 @@ RccsdtForceResult rccsdt_force_cpu(const core::System& system,
+ }
+ 
+ RccsdtForceResult rccsdt_force_cuda(const core::System& system,
+-                                    const scf::PhysicalReference& reference, const Problem& problem,
++                                    const hf::PhysicalReference& reference, const Problem& problem,
+                                     const SolverResult& cc_result, std::span<const double> eps_o,
+                                     std::span<const double> eps_v, std::size_t max_bytes,
+                                     int device_id, std::size_t derivative_stage_budget,
+diff --git a/src/cc/rccsdt_force.hpp b/src/cc/rccsdt_force.hpp
+index 4c93f618..d1424e41 100644
+--- a/src/cc/rccsdt_force.hpp
++++ b/src/cc/rccsdt_force.hpp
+@@ -12,7 +12,7 @@
+ namespace vibeqc::core {
+ struct System;
+ }
+-namespace vibeqc::scf {
++namespace vibeqc::hf {
+ struct PhysicalReference;
+ }
+ 
+@@ -34,11 +34,11 @@ struct RccsdtForcePlan {
+  * max_bytes is the complete endpoint allowance, including borrowed inputs.
+  */
+ RccsdtForcePlan plan_rccsd_force_cpu(const core::System& system,
+-                                     const scf::PhysicalReference& reference,
++                                     const hf::PhysicalReference& reference,
+                                      const Problem& problem, const SolverResult& cc_result,
+                                      std::size_t max_bytes);
+ RccsdtForcePlan plan_rccsdt_force_cpu(const core::System& system,
+-                                      const scf::PhysicalReference& reference,
++                                      const hf::PhysicalReference& reference,
+                                       const Problem& problem, const SolverResult& cc_result,
+                                       std::size_t max_bytes);
+ 
+@@ -75,12 +75,12 @@ struct RccsdtForceResult {
+  * and occupied/virtual energy vectors, as in plan_rccsdt_force_cpu.
+  */
+ RccsdtForceResult rccsd_force_cpu(const core::System& system,
+-                                  const scf::PhysicalReference& reference, const Problem& problem,
++                                  const hf::PhysicalReference& reference, const Problem& problem,
+                                   const SolverResult& cc_result, std::span<const double> eps_o,
+                                   std::span<const double> eps_v, std::size_t max_bytes);
+ 
+ RccsdtForceResult rccsdt_force_cpu(const core::System& system,
+-                                   const scf::PhysicalReference& reference, const Problem& problem,
++                                   const hf::PhysicalReference& reference, const Problem& problem,
+                                    const SolverResult& cc_result, std::span<const double> eps_o,
+                                    std::span<const double> eps_v, std::size_t max_bytes,
+                                    double denominator_threshold = 1e-10);
+@@ -94,13 +94,13 @@ RccsdtForceResult rccsdt_force_cpu(const core::System& system,
+  * consumer without authorizing a CPU fallback.
+  */
+ RccsdtForceResult rccsd_force_cuda(const core::System& system,
+-                                   const scf::PhysicalReference& reference, const Problem& problem,
++                                   const hf::PhysicalReference& reference, const Problem& problem,
+                                    const SolverResult& cc_result, std::span<const double> eps_o,
+                                    std::span<const double> eps_v, std::size_t max_bytes,
+                                    int device_id, std::size_t derivative_stage_budget);
+ 
+ RccsdtForceResult rccsdt_force_cuda(const core::System& system,
+-                                    const scf::PhysicalReference& reference, const Problem& problem,
++                                    const hf::PhysicalReference& reference, const Problem& problem,
+                                     const SolverResult& cc_result, std::span<const double> eps_o,
+                                     std::span<const double> eps_v, std::size_t max_bytes,
+                                     int device_id, std::size_t derivative_stage_budget,
+diff --git a/src/hf/reference.hpp b/src/hf/reference.hpp
+new file mode 100644
+index 00000000..ebaa95ff
+--- /dev/null
++++ b/src/hf/reference.hpp
+@@ -0,0 +1,43 @@
++#pragma once
++
++#include <cstddef>
++#include <vector>
++
++#include "core/electronic_reference.hpp"
++
++namespace vibeqc::hf {
++
++/** Owned physical canonical RHF state used by bounded post-HF consumers.
++ *
++ * This is method state, not SCF solver state. Keeping the canonical RHF
++ * reference under the HF owner prevents post-HF/CC consumers from depending on
++ * the generic SCF implementation solely to describe an RHF reference.
++ */
++struct PhysicalReference {
++  std::size_t nbf{};
++  std::size_t nocc{};
++  std::vector<double> overlap, hcore, fock, coefficients, orbital_energies, density;
++  /** Optional native force diagnostic: the actual occupation-weighted W used
++   * by Pulay response, detached before force assembly. Energy-only/post-HF
++   * exports leave this empty and incur no additional matrix reservation. */
++  std::vector<double> weighted_density;
++  double energy{};
++  double commutator_residual{};
++  double canonical_density_drift{};
++  double eigen_residual{};
++  std::size_t numeric_capacity_bytes{};
++
++  /** Borrow this owned RHF state through the method-neutral core contract. */
++  [[nodiscard]] core::ElectronicReferenceView electronic_reference() const noexcept {
++    core::ElectronicReferenceView view;
++    view.basis_functions = nbf;
++    view.spin_channels = 1;
++    view.overlap = overlap;
++    view.hcore = hcore;
++    view.energy = energy;
++    view.channels[0] = {nocc, coefficients, orbital_energies, density, fock, weighted_density};
++    return view;
++  }
++};
++
++}  // namespace vibeqc::hf
+diff --git a/src/methods/rccsd_method.cpp b/src/methods/rccsd_method.cpp
+index b173d891..51d1d4d6 100644
+--- a/src/methods/rccsd_method.cpp
++++ b/src/methods/rccsd_method.cpp
+@@ -136,7 +136,7 @@ void validate_descriptor(const vibeqc_method_descriptor& d,
+                       "RCCSD requires an explicit CPU or CUDA backend");
+ }
+ 
+-std::vector<double> fock_mo(const scf::PhysicalReference& ref) {
++std::vector<double> fock_mo(const hf::PhysicalReference& ref) {
+   const auto n = ref.nbf;
+   std::vector<double> scratch(n * n), result(n * n);
+   for (std::size_t mu = 0; mu < n; ++mu)
+@@ -157,7 +157,7 @@ std::vector<double> fock_mo(const scf::PhysicalReference& ref) {
+   return result;
+ }
+ 
+-std::size_t retained_reference_bytes(const scf::PhysicalReference& ref) {
++std::size_t retained_reference_bytes(const hf::PhysicalReference& ref) {
+   std::size_t result = 0;
+   const std::vector<double>* arrays[] = {
+       &ref.overlap, &ref.hcore,           &ref.fock, &ref.coefficients, &ref.orbital_energies,
+@@ -167,7 +167,7 @@ std::size_t retained_reference_bytes(const scf::PhysicalReference& ref) {
+   return result;
+ }
+ 
+-cc::Problem build_problem(const core::System& system, const scf::PhysicalReference& ref,
++cc::Problem build_problem(const core::System& system, const hf::PhysicalReference& ref,
+                           const cc::SolverOptions& options, bool cuda, int device,
+                           posthf::ProviderWork& provider_work,
+                           vibeqc_tensor::Metrics& provider_metrics) {
+diff --git a/src/methods/rccsd_method.hpp b/src/methods/rccsd_method.hpp
+index 700254c6..4b70cc6e 100644
+--- a/src/methods/rccsd_method.hpp
++++ b/src/methods/rccsd_method.hpp
+@@ -2,12 +2,12 @@
+ #include <memory>
+ 
+ #include "cc/solver.hpp"
++#include "hf/reference.hpp"
+ #include "methods/method.hpp"
+-#include "scf/types.hpp"
+ 
+ namespace vibeqc::methods::detail {
+ struct RccsdNativeState {
+-  std::shared_ptr<const scf::PhysicalReference> reference;
++  std::shared_ptr<const hf::PhysicalReference> reference;
+   cc::Problem problem;
+   cc::SolverResult solved;
+   std::vector<double> eps_o, eps_v;
+diff --git a/src/posthf/bridge.cpp b/src/posthf/bridge.cpp
+index 16c0d2b5..6946b2dd 100644
+--- a/src/posthf/bridge.cpp
++++ b/src/posthf/bridge.cpp
+@@ -14,6 +14,7 @@
+ #include <stdexcept>
+ 
+ #include "api/handles.hpp"
++#include "hf/reference.hpp"
+ #include "molecule/basis.hpp"
+ #include "posthf/capacity.hpp"
+ #include "posthf/cuda_derivative.hpp"
+@@ -66,15 +67,15 @@ int guarded(char* error, std::size_t size, F&& fn) noexcept {
+     return 1;
+   }
+ }
+-vibeqc::scf::PhysicalReference supplied_reference(const RawSource& source, const double* arrays,
+-                                                  std::size_t elements, double energy) {
++vibeqc::hf::PhysicalReference supplied_reference(const RawSource& source, const double* arrays,
++                                                 std::size_t elements, double energy) {
+   const auto n = source.nbf();
+   const auto count = vibeqc::posthf::checked_add(
+       vibeqc::posthf::checked_mul(5, vibeqc::posthf::checked_mul(n, n)), n);
+   if (!arrays || count != elements || !std::isfinite(energy) ||
+       source.orbital().multiplicity != 1 || source.orbital().electron_count % 2)
+     throw std::invalid_argument("invalid supplied reference");
+-  vibeqc::scf::PhysicalReference ref;
++  vibeqc::hf::PhysicalReference ref;
+   ref.nbf = n;
+   ref.nocc = source.orbital().electron_count / 2;
+   ref.energy = energy;
+diff --git a/src/posthf/mp2_derivative.hpp b/src/posthf/mp2_derivative.hpp
+index 2b11dfd8..80b5c9c5 100644
+--- a/src/posthf/mp2_derivative.hpp
++++ b/src/posthf/mp2_derivative.hpp
+@@ -7,7 +7,7 @@
+ namespace vibeqc::core {
+ struct System;
+ }
+-namespace vibeqc::scf {
++namespace vibeqc::hf {
+ struct PhysicalReference;
+ }
+ 
+@@ -21,7 +21,7 @@ namespace vibeqc::mp2 {
+  * or coordinate-major derivative tensor exists.
+  */
+ std::vector<double> conventional_derivative_cpu(const core::System& system,
+-                                                const scf::PhysicalReference& reference,
++                                                const hf::PhysicalReference& reference,
+                                                 const LagrangianWeights& weights);
+ 
+ /** Contract public-AO RI Lagrangian weights through the bounded #143 CPU
+@@ -33,7 +33,7 @@ std::vector<double> density_fitted_derivative_cpu(const core::System& orbital,
+                                                   std::size_t stage_budget);
+ 
+ std::vector<double> conventional_derivative_cuda(const core::System& system,
+-                                                 const scf::PhysicalReference& reference,
++                                                 const hf::PhysicalReference& reference,
+                                                  const LagrangianWeights& weights, int device_id,
+                                                  std::size_t stage_budget);
+ 
+diff --git a/src/posthf/mp2_derivative_common.cpp b/src/posthf/mp2_derivative_common.cpp
+index 1aac03f7..755c3dc2 100644
+--- a/src/posthf/mp2_derivative_common.cpp
++++ b/src/posthf/mp2_derivative_common.cpp
+@@ -5,9 +5,9 @@
+ #include <cmath>
+ #include <stdexcept>
+ 
++#include "hf/reference.hpp"
+ #include "molecule/basis.hpp"
+ #include "posthf/capacity.hpp"
+-#include "scf/types.hpp"
+ 
+ namespace vibeqc::mp2::detail {
+ namespace {
+@@ -41,7 +41,7 @@ std::vector<double> pullback_matrix(std::span<const double> coefficients,
+   return ao;
+ }
+ 
+-void transform_remaining_shells(const core::System& system, const scf::PhysicalReference& reference,
++void transform_remaining_shells(const core::System& system, const hf::PhysicalReference& reference,
+                                 const std::vector<std::size_t>& offsets, std::size_t si,
+                                 std::span<const double> first,
+                                 const EriShellDerivativeContract& eri_shell,
+@@ -97,7 +97,7 @@ void transform_remaining_shells(const core::System& system, const scf::PhysicalR
+ }  // namespace
+ 
+ std::vector<double> conventional_derivative(const core::System& system,
+-                                            const scf::PhysicalReference& reference,
++                                            const hf::PhysicalReference& reference,
+                                             const LagrangianWeights& weights,
+                                             const OneElectronDerivativeContract& one_electron,
+                                             const EriShellDerivativeContract& eri_shell) {
+diff --git a/src/posthf/mp2_derivative_common.hpp b/src/posthf/mp2_derivative_common.hpp
+index 329c4b15..1c633065 100644
+--- a/src/posthf/mp2_derivative_common.hpp
++++ b/src/posthf/mp2_derivative_common.hpp
+@@ -11,7 +11,7 @@
+ namespace vibeqc::core {
+ struct System;
+ }
+-namespace vibeqc::scf {
++namespace vibeqc::hf {
+ struct PhysicalReference;
+ }
+ 
+@@ -23,7 +23,7 @@ using EriShellDerivativeContract = std::function<std::array<double, 12>(
+     const std::array<std::size_t, 4>&, std::span<const double>)>;
+ 
+ std::vector<double> conventional_derivative(const core::System& system,
+-                                            const scf::PhysicalReference& reference,
++                                            const hf::PhysicalReference& reference,
+                                             const LagrangianWeights& weights,
+                                             const OneElectronDerivativeContract& one_electron,
+                                             const EriShellDerivativeContract& eri_shell);
+diff --git a/src/posthf/mp2_derivative_cpu.cpp b/src/posthf/mp2_derivative_cpu.cpp
+index e96077ca..09c35d47 100644
+--- a/src/posthf/mp2_derivative_cpu.cpp
++++ b/src/posthf/mp2_derivative_cpu.cpp
+@@ -9,7 +9,7 @@
+ namespace vibeqc::mp2 {
+ 
+ std::vector<double> conventional_derivative_cpu(const core::System& system,
+-                                                const scf::PhysicalReference& reference,
++                                                const hf::PhysicalReference& reference,
+                                                 const LagrangianWeights& weights) {
+   return detail::conventional_derivative(
+       system, reference, weights,
+diff --git a/src/posthf/mp2_derivative_cuda.cpp b/src/posthf/mp2_derivative_cuda.cpp
+index f654ccb8..215bc30f 100644
+--- a/src/posthf/mp2_derivative_cuda.cpp
++++ b/src/posthf/mp2_derivative_cuda.cpp
+@@ -45,7 +45,7 @@ void add_nuclear_repulsion_gradient(const core::System& system, std::vector<doub
+ #endif
+ 
+ std::vector<double> conventional_derivative_cuda(const core::System& system,
+-                                                 const scf::PhysicalReference& reference,
++                                                 const hf::PhysicalReference& reference,
+                                                  const LagrangianWeights& weights, int device_id,
+                                                  std::size_t stage_budget) {
+ #if !VIBEQC_HAS_CUDA
+diff --git a/src/posthf/mp2_energy.cpp b/src/posthf/mp2_energy.cpp
+index 5877be67..2cd74fe3 100644
+--- a/src/posthf/mp2_energy.cpp
++++ b/src/posthf/mp2_energy.cpp
+@@ -15,7 +15,7 @@
+ 
+ namespace vibeqc::mp2 {
+ namespace {
+-void validate_reference(const scf::PhysicalReference& ref, double threshold,
++void validate_reference(const hf::PhysicalReference& ref, double threshold,
+                         unsigned requested_tile) {
+   if (!ref.nocc || ref.nocc >= ref.nbf || ref.orbital_energies.size() != ref.nbf ||
+       !std::isfinite(threshold) || threshold <= 0 || !requested_tile)
+@@ -25,7 +25,7 @@ void validate_reference(const scf::PhysicalReference& ref, double threshold,
+     throw std::invalid_argument("nonfinite MP2 orbital energies");
+ }
+ 
+-std::pair<double, double> denominator_bounds(const scf::PhysicalReference& ref, double threshold) {
++std::pair<double, double> denominator_bounds(const hf::PhysicalReference& ref, double threshold) {
+   const auto& eps = ref.orbital_energies;
+   const double hi = *std::max_element(eps.begin(), eps.begin() + ref.nocc);
+   const double lo = *std::min_element(eps.begin() + ref.nocc, eps.end());
+@@ -49,7 +49,7 @@ unsigned resolved_tile(std::size_t virtuals, unsigned requested) {
+ }
+ }  // namespace
+ 
+-Energy conventional_energy(const scf::PhysicalReference& ref, const posthf::RawSource& source,
++Energy conventional_energy(const hf::PhysicalReference& ref, const posthf::RawSource& source,
+                            std::size_t budget, double threshold, unsigned requested_tile, bool cuda,
+                            int device) {
+   validate_reference(ref, threshold, requested_tile);
+@@ -250,7 +250,7 @@ Energy conventional_energy(const scf::PhysicalReference& ref, const posthf::RawS
+   return result;
+ }
+ 
+-Energy density_fitted_energy(const scf::PhysicalReference& ref, const posthf::RawSource& source,
++Energy density_fitted_energy(const hf::PhysicalReference& ref, const posthf::RawSource& source,
+                              std::size_t budget, double threshold, double metric_relative_threshold,
+                              unsigned requested_tile, bool cuda, int device) {
+   (void)device;  // Referenced only by the compiled CUDA branch below.
+diff --git a/src/posthf/mp2_energy.hpp b/src/posthf/mp2_energy.hpp
+index 6f52920a..84a46ca5 100644
+--- a/src/posthf/mp2_energy.hpp
++++ b/src/posthf/mp2_energy.hpp
+@@ -12,10 +12,10 @@ struct Energy {
+   posthf::ProviderWork provider_work;
+   std::size_t mo_transfer_bytes{};
+ };
+-Energy conventional_energy(const scf::PhysicalReference& reference, const posthf::RawSource& source,
++Energy conventional_energy(const hf::PhysicalReference& reference, const posthf::RawSource& source,
+                            std::size_t budget, double denominator_threshold,
+                            unsigned virtual_tile = 8, bool cuda = false, int device = 0);
+-Energy density_fitted_energy(const scf::PhysicalReference& reference,
++Energy density_fitted_energy(const hf::PhysicalReference& reference,
+                              const posthf::RawSource& source, std::size_t budget,
+                              double denominator_threshold, double metric_relative_threshold,
+                              unsigned virtual_tile = 8, bool cuda = false, int device = 0);
+diff --git a/src/posthf/mp2_force.cpp b/src/posthf/mp2_force.cpp
+index 8300ff97..b060f3f2 100644
+--- a/src/posthf/mp2_force.cpp
++++ b/src/posthf/mp2_force.cpp
+@@ -5,6 +5,7 @@
+ #include <numeric>
+ #include <stdexcept>
+ 
++#include "hf/reference.hpp"
+ #include "molecule/basis.hpp"
+ #include "posthf/capacity.hpp"
+ #include "posthf/mp2_derivative.hpp"
+@@ -12,7 +13,6 @@
+ #include "posthf/native_provider.hpp"
+ #include "posthf/raw_source.hpp"
+ #include "response/solve.hpp"
+-#include "scf/types.hpp"
+ 
+ namespace vibeqc::mp2 {
+ namespace {
+@@ -24,7 +24,7 @@ std::vector<std::size_t> range(std::size_t begin, std::size_t end) {
+   return result;
+ }
+ 
+-std::vector<double> hcore_mo(const scf::PhysicalReference& reference) {
++std::vector<double> hcore_mo(const hf::PhysicalReference& reference) {
+   const auto n = reference.nbf;
+   if (reference.hcore.size() != square(n) || reference.coefficients.size() != square(n))
+     throw std::invalid_argument("MP2 force reference has inconsistent one-electron data");
+@@ -38,7 +38,7 @@ std::vector<double> hcore_mo(const scf::PhysicalReference& reference) {
+   return result;
+ }
+ 
+-EnergyAdjoint energy_adjoint(const scf::PhysicalReference& reference,
++EnergyAdjoint energy_adjoint(const hf::PhysicalReference& reference,
+                              const posthf::MOBlockProvider& provider, double denominator_threshold,
+                              bool cuda, int device_id) {
+   const auto no = reference.nocc, n = reference.nbf, nv = n - no;
+@@ -54,7 +54,7 @@ EnergyAdjoint energy_adjoint(const scf::PhysicalReference& reference,
+   return canonical_energy_adjoint(ordered, reference.orbital_energies, no, denominator_threshold);
+ }
+ 
+-response::LinearResponseProblem response_problem(const scf::PhysicalReference& reference,
++response::LinearResponseProblem response_problem(const hf::PhysicalReference& reference,
+                                                  const posthf::MOBlockProvider& provider, bool cuda,
+                                                  int device_id) {
+   const auto no = reference.nocc, n = reference.nbf, nv = n - no;
+@@ -86,7 +86,7 @@ response::LinearResponseProblem response_problem(const scf::PhysicalReference& r
+ }
+ 
+ ConventionalForceResult conventional_force_impl(
+-    const scf::PhysicalReference& reference, const posthf::RawSource& source,
++    const hf::PhysicalReference& reference, const posthf::RawSource& source,
+     std::size_t budget_bytes, double denominator_threshold, double same_space_threshold,
+     const response::GmresOptions& response_options, bool cuda, int device_id) {
+ #if !VIBEQC_HAS_CUDA
+@@ -156,7 +156,7 @@ ConventionalForceResult conventional_force_impl(
+ }
+ }  // namespace
+ 
+-ConventionalForceResult conventional_force_cpu(const scf::PhysicalReference& reference,
++ConventionalForceResult conventional_force_cpu(const hf::PhysicalReference& reference,
+                                                const posthf::RawSource& source,
+                                                std::size_t budget_bytes,
+                                                double denominator_threshold,
+@@ -167,7 +167,7 @@ ConventionalForceResult conventional_force_cpu(const scf::PhysicalReference& ref
+ }
+ 
+ ConventionalForceResult conventional_force_cuda(
+-    const scf::PhysicalReference& reference, const posthf::RawSource& source,
++    const hf::PhysicalReference& reference, const posthf::RawSource& source,
+     std::size_t budget_bytes, double denominator_threshold, double same_space_threshold,
+     const response::GmresOptions& response_options, int device_id) {
+   return conventional_force_impl(reference, source, budget_bytes, denominator_threshold,
+@@ -175,7 +175,7 @@ ConventionalForceResult conventional_force_cuda(
+ }
+ 
+ ConventionalForceResult density_fitted_force_cpu(
+-    const scf::PhysicalReference& reference, const posthf::RawSource& source,
++    const hf::PhysicalReference& reference, const posthf::RawSource& source,
+     std::size_t budget_bytes, double denominator_threshold, double metric_relative_threshold,
+     double same_space_threshold, const response::GmresOptions& response_options) {
+   if (!reference.nocc || reference.nocc >= reference.nbf || source.nbf() != reference.nbf ||
+diff --git a/src/posthf/mp2_force.hpp b/src/posthf/mp2_force.hpp
+index 2ebe3ff2..68bd6de7 100644
+--- a/src/posthf/mp2_force.hpp
++++ b/src/posthf/mp2_force.hpp
+@@ -8,7 +8,7 @@
+ namespace vibeqc::posthf {
+ class RawSource;
+ }
+-namespace vibeqc::scf {
++namespace vibeqc::hf {
+ struct PhysicalReference;
+ }
+ 
+@@ -29,7 +29,7 @@ struct ConventionalForceResult {
+  * The result is unpublished. The caller remains responsible for transactionally
+  * copying it only after the full energy/force endpoint succeeds.
+  */
+-ConventionalForceResult conventional_force_cpu(const scf::PhysicalReference& reference,
++ConventionalForceResult conventional_force_cpu(const hf::PhysicalReference& reference,
+                                                const posthf::RawSource& source,
+                                                std::size_t budget_bytes,
+                                                double denominator_threshold,
+@@ -38,7 +38,7 @@ ConventionalForceResult conventional_force_cpu(const scf::PhysicalReference& ref
+ 
+ /** Complete conventional canonical RHF-MP2 analytic force on CUDA. */
+ ConventionalForceResult conventional_force_cuda(
+-    const scf::PhysicalReference& reference, const posthf::RawSource& source,
++    const hf::PhysicalReference& reference, const posthf::RawSource& source,
+     std::size_t budget_bytes, double denominator_threshold, double same_space_threshold,
+     const response::GmresOptions& response_options, int device_id);
+ 
+@@ -49,7 +49,7 @@ ConventionalForceResult conventional_force_cuda(
+  * consumed by the bounded generated DF derivative path.
+  */
+ ConventionalForceResult density_fitted_force_cpu(
+-    const scf::PhysicalReference& reference, const posthf::RawSource& source,
++    const hf::PhysicalReference& reference, const posthf::RawSource& source,
+     std::size_t budget_bytes, double denominator_threshold, double metric_relative_threshold,
+     double same_space_threshold, const response::GmresOptions& response_options);
+ 
+diff --git a/src/posthf/mp2_gradient.cpp b/src/posthf/mp2_gradient.cpp
+index ec9a85e5..76779f57 100644
+--- a/src/posthf/mp2_gradient.cpp
++++ b/src/posthf/mp2_gradient.cpp
+@@ -272,7 +272,7 @@ OrbitalRhs canonical_orbital_rhs(std::span<const double> hcore_mo, std::span<con
+   return result;
+ }
+ 
+-OrbitalRhs canonical_orbital_rhs_streamed(const scf::PhysicalReference& reference,
++OrbitalRhs canonical_orbital_rhs_streamed(const hf::PhysicalReference& reference,
+                                           std::span<const double> hcore_mo,
+                                           const posthf::MOBlockProvider& provider,
+                                           const EnergyAdjoint& adjoint, double same_space_threshold,
+@@ -364,7 +364,7 @@ LagrangianWeights canonical_lagrangian_weights(std::span<const double> hcore_mo,
+ }
+ 
+ LagrangianWeights canonical_lagrangian_weights_streamed(
+-    const scf::PhysicalReference& reference, std::span<const double> hcore_mo,
++    const hf::PhysicalReference& reference, std::span<const double> hcore_mo,
+     const posthf::MOBlockProvider& provider, const EnergyAdjoint& adjoint,
+     std::span<const double> response, double same_space_threshold, bool cuda, int device_id) {
+   auto orbital = canonical_orbital_rhs_streamed(reference, hcore_mo, provider, adjoint,
+@@ -402,7 +402,7 @@ LagrangianWeights canonical_lagrangian_weights_streamed(
+ }
+ 
+ DensityFittedLagrangianWeights density_fitted_lagrangian_weights(
+-    const scf::PhysicalReference& reference, const posthf::DensityFittedBlockProvider& provider,
++    const hf::PhysicalReference& reference, const posthf::DensityFittedBlockProvider& provider,
+     const LagrangianWeights& weights, std::size_t maximum_bytes) {
+   const auto n = reference.nbf, occupied = reference.nocc, na = provider.auxiliary_count();
+   if (&provider.reference() != &reference || !n || !occupied || occupied >= n || !na ||
+diff --git a/src/posthf/mp2_gradient.hpp b/src/posthf/mp2_gradient.hpp
+index 0b850ea5..a59b8d7e 100644
+--- a/src/posthf/mp2_gradient.hpp
++++ b/src/posthf/mp2_gradient.hpp
+@@ -10,7 +10,7 @@ namespace vibeqc::posthf {
+ class MOBlockProvider;
+ class DensityFittedBlockProvider;
+ }  // namespace vibeqc::posthf
+-namespace vibeqc::scf {
++namespace vibeqc::hf {
+ struct PhysicalReference;
+ }
+ 
+@@ -82,7 +82,7 @@ EnergyAdjoint canonical_energy_adjoint(std::span<const double> integrals_iajb,
+                                        std::size_t occupied, double denominator_threshold);
+ OrbitalRhs canonical_orbital_rhs(std::span<const double> hcore_mo, std::span<const double> eri_mo,
+                                  const EnergyAdjoint& adjoint, double same_space_threshold);
+-OrbitalRhs canonical_orbital_rhs_streamed(const scf::PhysicalReference& reference,
++OrbitalRhs canonical_orbital_rhs_streamed(const hf::PhysicalReference& reference,
+                                           std::span<const double> hcore_mo,
+                                           const posthf::MOBlockProvider& provider,
+                                           const EnergyAdjoint& adjoint, double same_space_threshold,
+@@ -92,7 +92,7 @@ LagrangianWeights canonical_lagrangian_weights(std::span<const double> hcore_mo,
+                                                const EnergyAdjoint& adjoint,
+                                                std::span<const double> response,
+                                                double same_space_threshold);
+-LagrangianWeights canonical_lagrangian_weights_streamed(const scf::PhysicalReference& reference,
++LagrangianWeights canonical_lagrangian_weights_streamed(const hf::PhysicalReference& reference,
+                                                         std::span<const double> hcore_mo,
+                                                         const posthf::MOBlockProvider& provider,
+                                                         const EnergyAdjoint& adjoint,
+@@ -106,7 +106,7 @@ LagrangianWeights canonical_lagrangian_weights_streamed(const scf::PhysicalRefer
+  * shared fixed-rank symmetric inverse-square-root rule (#466).
+  */
+ DensityFittedLagrangianWeights density_fitted_lagrangian_weights(
+-    const scf::PhysicalReference& reference, const posthf::DensityFittedBlockProvider& provider,
++    const hf::PhysicalReference& reference, const posthf::DensityFittedBlockProvider& provider,
+     const LagrangianWeights& weights, std::size_t maximum_bytes);
+ 
+ GradientResourcePlan conventional_gradient_plan(
+diff --git a/src/posthf/native_provider.cpp b/src/posthf/native_provider.cpp
+index d238e800..b4a67ab2 100644
+--- a/src/posthf/native_provider.cpp
++++ b/src/posthf/native_provider.cpp
+@@ -12,8 +12,8 @@
+ 
+ namespace vibeqc::posthf {
+ NativeBlockProvider::NativeBlockProvider(const integrals::ElectronInteractionSource& source,
+-                                         const scf::PhysicalReference& reference,
+-                                         std::size_t budget, unsigned axis_tile)
++                                         const hf::PhysicalReference& reference, std::size_t budget,
++                                         unsigned axis_tile)
+     : source_(source),
+       ref_(reference),
+       budget_(budget),
+@@ -359,7 +359,7 @@ std::vector<double> NativeBlockProvider::get(const MOSlots& slots, bool cuda, in
+ }
+ 
+ DensityFittedBlockProvider::DensityFittedBlockProvider(const RawSource& source,
+-                                                       const scf::PhysicalReference& reference,
++                                                       const hf::PhysicalReference& reference,
+                                                        std::size_t budget,
+                                                        double relative_threshold)
+     : source_(source),
+diff --git a/src/posthf/native_provider.hpp b/src/posthf/native_provider.hpp
+index 61be09e1..645d98ff 100644
+--- a/src/posthf/native_provider.hpp
++++ b/src/posthf/native_provider.hpp
+@@ -3,10 +3,10 @@
+ #include <array>
+ #include <vector>
+ 
++#include "hf/reference.hpp"
+ #include "integrals/electron_interaction_source.hpp"
+ #include "posthf/block_capacity_generated.hpp"
+ #include "posthf/raw_source.hpp"
+-#include "scf/types.hpp"
+ #include "tensor/metrics.hpp"
+ 
+ namespace vibeqc::posthf {
+@@ -37,7 +37,7 @@ class MOBlockProvider {
+   virtual std::vector<double> get(const MOSlots& slots, bool cuda = false, int device = 0,
+                                   vibeqc_tensor::Metrics* metrics = nullptr) const = 0;
+   virtual std::size_t provider_bytes() const noexcept = 0;
+-  virtual const scf::PhysicalReference& reference() const noexcept = 0;
++  virtual const hf::PhysicalReference& reference() const noexcept = 0;
+ };
+ 
+ /** Native consumer adapter of CG10's cyclic staged transformation. A private
+@@ -45,7 +45,7 @@ class MOBlockProvider {
+ class NativeBlockProvider final : public MOBlockProvider {
+  public:
+   NativeBlockProvider(const integrals::ElectronInteractionSource& source,
+-                      const scf::PhysicalReference& reference, std::size_t budget,
++                      const hf::PhysicalReference& reference, std::size_t budget,
+                       unsigned axis_tile = 2);
+   NumericBlockPlan plan(const std::array<std::size_t, 4>& shape, bool cuda = false) const;
+   std::size_t batch_bytes(const std::array<std::size_t, 4>& shape, std::size_t requests,
+@@ -65,13 +65,13 @@ class NativeBlockProvider final : public MOBlockProvider {
+   std::size_t reference_bytes() const noexcept { return reference_bytes_; }
+   std::size_t provider_bytes() const noexcept override { return source_bytes_ + reference_bytes_; }
+   const std::array<std::size_t, 4>& tile_shape() const noexcept { return tile_; }
+-  const scf::PhysicalReference& reference() const noexcept override { return ref_; }
++  const hf::PhysicalReference& reference() const noexcept override { return ref_; }
+   const integrals::ElectronInteractionSource& source() const noexcept { return source_; }
+ 
+  private:
+   std::size_t common_host_bytes() const;
+   const integrals::ElectronInteractionSource& source_;
+-  const scf::PhysicalReference& ref_;
++  const hf::PhysicalReference& ref_;
+   std::size_t budget_, source_bytes_, reference_bytes_;
+   std::array<std::size_t, 4> tile_;
+ };
+@@ -86,12 +86,12 @@ class NativeBlockProvider final : public MOBlockProvider {
+  */
+ class DensityFittedBlockProvider final : public MOBlockProvider {
+  public:
+-  DensityFittedBlockProvider(const RawSource& source, const scf::PhysicalReference& reference,
++  DensityFittedBlockProvider(const RawSource& source, const hf::PhysicalReference& reference,
+                              std::size_t budget, double relative_threshold = 1.0e-10);
+   std::vector<double> get(const MOSlots& slots, bool cuda = false, int device = 0,
+                           vibeqc_tensor::Metrics* metrics = nullptr) const override;
+   std::size_t provider_bytes() const noexcept override { return provider_bytes_; }
+-  const scf::PhysicalReference& reference() const noexcept override { return ref_; }
++  const hf::PhysicalReference& reference() const noexcept override { return ref_; }
+   const RawSource& source() const noexcept { return source_; }
+   std::size_t auxiliary_count() const noexcept { return naux_; }
+   double relative_threshold() const noexcept { return relative_threshold_; }
+@@ -102,7 +102,7 @@ class DensityFittedBlockProvider final : public MOBlockProvider {
+ 
+  private:
+   const RawSource& source_;
+-  const scf::PhysicalReference& ref_;
++  const hf::PhysicalReference& ref_;
+   std::size_t budget_{}, n_{}, naux_{}, provider_bytes_{};
+   double relative_threshold_{};
+   std::vector<double> metric_, inverse_square_root_, transformed_, whitened_;
+diff --git a/src/posthf/ri_mp2_cuda.cu b/src/posthf/ri_mp2_cuda.cu
+index 876fd4a8..a88b0217 100644
+--- a/src/posthf/ri_mp2_cuda.cu
++++ b/src/posthf/ri_mp2_cuda.cu
+@@ -200,7 +200,7 @@ RiMp2CudaBlockPlan plan_ri_mp2_cuda_blocks(std::size_t fixed, std::size_t budget
+   return {plan.virtual_block, plan.j_batch, plan.peak_bytes, plan.full_resident};
+ }
+ 
+-RiMp2CudaEnergy density_fitted_energy_cuda(const scf::PhysicalReference& ref,
++RiMp2CudaEnergy density_fitted_energy_cuda(const hf::PhysicalReference& ref,
+                                            const posthf::RawSource& source, std::size_t budget,
+                                            double metric_relative_threshold, int device) {
+   const std::size_t n = ref.nbf;
+diff --git a/src/posthf/ri_mp2_cuda.hpp b/src/posthf/ri_mp2_cuda.hpp
+index 6511c5f4..ec9a165a 100644
+--- a/src/posthf/ri_mp2_cuda.hpp
++++ b/src/posthf/ri_mp2_cuda.hpp
+@@ -3,8 +3,8 @@
+ #include <cstddef>
+ #include <cstdint>
+ 
++#include "hf/reference.hpp"
+ #include "posthf/raw_source.hpp"
+-#include "scf/mean_field.hpp"
+ #include "tensor/metrics.hpp"
+ 
+ namespace vibeqc::mp2 {
+@@ -31,7 +31,7 @@ struct RiMp2CudaEnergy {
+   vibeqc_tensor::Metrics metrics;
+ };
+ 
+-RiMp2CudaEnergy density_fitted_energy_cuda(const scf::PhysicalReference& reference,
++RiMp2CudaEnergy density_fitted_energy_cuda(const hf::PhysicalReference& reference,
+                                            const posthf::RawSource& source, std::size_t budget,
+                                            double metric_relative_threshold, int device);
+ 
+diff --git a/src/scf/types.hpp b/src/scf/types.hpp
+index ef7c11a1..f67deb3f 100644
+--- a/src/scf/types.hpp
++++ b/src/scf/types.hpp
+@@ -5,9 +5,9 @@
+ #include <optional>
+ #include <vector>
+ 
+-#include "core/electronic_reference.hpp"
+ #include "dft/density_source.hpp"
+ #include "dft/scf_diagnostic.hpp"
++#include "hf/reference.hpp"
+ #include "scf/fock_build.hpp"
+ #include "vibeqc/vibeqc.h"
+ 
+@@ -147,33 +147,8 @@ struct ScfOptions {
+ };
+ 
+ /** Internal mean-field result, including state retained for warm starts. */
+-/** Owned physical canonical RHF state used by bounded post-HF consumers. */
+-struct PhysicalReference {
+-  std::size_t nbf{};
+-  std::size_t nocc{};
+-  std::vector<double> overlap, hcore, fock, coefficients, orbital_energies, density;
+-  /** Optional native force diagnostic: the actual occupation-weighted W used
+-   * by Pulay response, detached before force assembly. Energy-only/post-HF
+-   * exports leave this empty and incur no additional matrix reservation. */
+-  std::vector<double> weighted_density;
+-  double energy{};
+-  double commutator_residual{};
+-  double canonical_density_drift{};
+-  double eigen_residual{};
+-  std::size_t numeric_capacity_bytes{};
+-
+-  /** Borrow this owned RHF state through the method-neutral core contract. */
+-  [[nodiscard]] core::ElectronicReferenceView electronic_reference() const noexcept {
+-    core::ElectronicReferenceView view;
+-    view.basis_functions = nbf;
+-    view.spin_channels = 1;
+-    view.overlap = overlap;
+-    view.hcore = hcore;
+-    view.energy = energy;
+-    view.channels[0] = {nocc, coefficients, orbital_energies, density, fock, weighted_density};
+-    return view;
+-  }
+-};
++/** Transitional compatibility alias. New HF/post-HF code should use hf::PhysicalReference. */
++using PhysicalReference = hf::PhysicalReference;
+ 
+ struct ScfResult {
+   double energy{};
+diff --git a/tests/python/test_electronic_structure_boundaries.py b/tests/python/test_electronic_structure_boundaries.py
+index d8a6ec94..9b697e29 100644
+--- a/tests/python/test_electronic_structure_boundaries.py
++++ b/tests/python/test_electronic_structure_boundaries.py
+@@ -22,6 +22,7 @@ def test_current_cross_method_boundaries_are_valid() -> None:
+         "solver",
+         "response",
+         "scf",
++        "hf",
+         "dft",
+         "posthf",
+         "cc",
+@@ -55,13 +56,13 @@ def test_current_cross_method_boundaries_are_valid() -> None:
+         for gate in report["regression_inventory"].values()
+         for test in gate["tests"]
+     )
+-    assert {"shared", "hf_only", "dft_only", "cc_only"} <= set(
++    assert {"shared", "scf_transition", "hf_only", "dft_only", "cc_only"} <= set(
+         report["ownership_groups"]
+     )
+ 
+ 
+ @pytest.mark.parametrize("owner", ["core", "runtime", "tensor", "solver", "response"])
+-@pytest.mark.parametrize("method", ["scf", "dft", "posthf", "cc"])
++@pytest.mark.parametrize("method", ["scf", "hf", "dft", "posthf", "cc"])
+ def test_shared_layer_cannot_depend_on_concrete_method(
+     tmp_path: typing.Any, owner: str, method: str
+ ) -> None:
+@@ -141,7 +142,7 @@ def test_shared_layers_may_depend_on_other_shared_layers(tmp_path: typing.Any) -
+     assert audit_electronic_structure_boundaries(tmp_path)["errors"] == []
+ 
+ 
+-@pytest.mark.parametrize("method", ["scf", "dft", "posthf", "cc"])
++@pytest.mark.parametrize("method", ["scf", "hf", "dft", "posthf", "cc"])
+ def test_provider_contract_cannot_depend_on_concrete_method(
+     tmp_path: typing.Any, method: str
+ ) -> None:
+diff --git a/tests/python/test_ri_mp2_reverse_memory.py b/tests/python/test_ri_mp2_reverse_memory.py
+index ea3cdd9d..51cc6358 100644
+--- a/tests/python/test_ri_mp2_reverse_memory.py
++++ b/tests/python/test_ri_mp2_reverse_memory.py
+@@ -108,7 +108,7 @@ struct DensityFittingMetricFactor {
+ """
+ 
+ PROVIDER = r"""
+-namespace vibeqc::scf {
++namespace vibeqc::hf {
+ struct PhysicalReference {
+   std::size_t nbf, nocc;
+   std::vector<double> coefficients;
+@@ -124,10 +124,10 @@ std::size_t checked_add(std::size_t a,std::size_t b) {
+   return a+b;
+ }
+ struct DensityFittedBlockProvider {
+-  const scf::PhysicalReference& ref;
++  const hf::PhysicalReference& ref;
+   std::size_t na;
+   std::vector<double> m,x,a,b;
+-  DensityFittedBlockProvider(const scf::PhysicalReference& r,std::size_t size)
++  DensityFittedBlockProvider(const hf::PhysicalReference& r,std::size_t size)
+       :ref(r),na(size),m(na*na),x(na*na),a(r.nbf*r.nbf*na),b(a.size()) {
+     for(std::size_t i=0;i<na;++i) {
+       m[i*na+i]=1.0+0.01*i;
+@@ -175,7 +175,7 @@ int main(int argc,char** argv) {
+   if(argc!=3) return 2;
+   using namespace vibeqc;
+   const std::size_t n=std::strtoul(argv[1],nullptr,10),na=std::strtoul(argv[2],nullptr,10);
+-  scf::PhysicalReference ref{n,1,std::vector<double>(n*n)};
++  hf::PhysicalReference ref{n,1,std::vector<double>(n*n)};
+   for(std::size_t i=0;i<n;++i) ref.coefficients[i*n+i]=1.0;
+   posthf::DensityFittedBlockProvider provider(ref,na);
+   mp2::LagrangianWeights weights{n,1,std::vector<double>(n*n,0.2),
+diff --git a/tools/check_electronic_structure_boundaries.py b/tools/check_electronic_structure_boundaries.py
+index d303b5c5..afde131c 100644
+--- a/tools/check_electronic_structure_boundaries.py
++++ b/tools/check_electronic_structure_boundaries.py
+@@ -22,7 +22,7 @@ SHARED_OWNERS = ("core", "runtime", "tensor", "solver", "response")
+ SHARED_CONTRACTS = {
+     "integrals/electron_interaction_source.hpp": "provider contract",
+ }
+-METHOD_PREFIXES = ("scf/", "dft/", "posthf/", "cc/")
++METHOD_PREFIXES = ("scf/", "hf/", "dft/", "posthf/", "cc/")
+ 
+ # Current reverse edges are explicit debt ceilings, not approved design. The
+ # check allows them to disappear but rejects any new shared -> method edge.
+@@ -44,17 +44,13 @@ KNOWN_POSTHF_SCF_EDGES = {
+     ("posthf/bridge.cpp", "scf/proposals.hpp"),
+     ("posthf/cuda_derivative.cpp", "scf/cuda_weighted_eri.hpp"),
+     ("posthf/df_bridge.cu", "scf/cuda_density_fitting.hpp"),
+-    ("posthf/mp2_derivative_common.cpp", "scf/types.hpp"),
+     ("posthf/mp2_derivative_cuda.cpp", "scf/cuda/rhf_policy.hpp"),
+     ("posthf/mp2_derivative_cuda.cpp", "scf/cuda_one_electron_gradient.hpp"),
+     ("posthf/mp2_energy.cpp", "scf/cuda_density_fitting_integrals.hpp"),
+     ("posthf/mp2_energy.cpp", "scf/density_fitting.hpp"),
+-    ("posthf/mp2_force.cpp", "scf/types.hpp"),
+-    ("posthf/native_provider.hpp", "scf/types.hpp"),
+     ("posthf/ri_mp2_cuda.cu", "scf/cuda/df_plan_internal.hpp"),
+     ("posthf/ri_mp2_cuda.cu", "scf/cuda_density_fitting.hpp"),
+     ("posthf/ri_mp2_cuda.cu", "scf/cuda_density_fitting_eigen.hpp"),
+-    ("posthf/ri_mp2_cuda.hpp", "scf/mean_field.hpp"),
+ }
+ 
+ # Host bounded iteration, DIIS, and its dense solve moved to src/solver in
+@@ -300,8 +296,10 @@ def _ownership_metrics(root: Path) -> dict[str, dict[str, int]]:
+         area = relative.parts[0]
+         if area in SHARED_OWNERS or spelling in SHARED_CONTRACTS:
+             return "shared"
+-        if area == "scf":
++        if area == "hf":
+             return "hf_only"
++        if area == "scf":
++            return "scf_transition"
+         if area == "dft":
+             return "dft_only"
+         if area == "cc":

@@ -1,0 +1,1 @@
+{"source_spins": 2, "assessment_spins": 1, "selected": "device_fused", "source_bytes": 784}

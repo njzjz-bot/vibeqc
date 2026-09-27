@@ -1,0 +1,62 @@
+{
+  "master": "c308ff84dd0fb68a83a027ae02206fe98ac7c7ee",
+  "prs": {
+    "1444": {
+      "head": "155e0b0ac50b5279a35846379f8fa7fb5fb610c3",
+      "base": "8f62fe00978c6d4a16fc8587d48168cdb95d4b97",
+      "clean": false,
+      "overlap": [
+        "src/dft/dispersion/d4_cuda.cu",
+        "src/dft/dispersion/d4_math.hpp",
+        "src/dft/dispersion/d4_reference.hpp",
+        "src/xtb/native/CUDA_SOURCE_PROVENANCE.json",
+        "src/xtb/native/src/backends/cuda/gfn2_d4.cu",
+        "tests/python/test_gfn2_cuda_provenance.py"
+      ]
+    },
+    "1448": {
+      "head": "1434916287df7c2ce1ceb42c4adf0d48fe0529c0",
+      "base": "8f62fe00978c6d4a16fc8587d48168cdb95d4b97",
+      "clean": false,
+      "overlap": [
+        "python/vibeqc_compiler/common/program_region.py",
+        "tests/python/test_program_ir_region.py",
+        "tests/python/test_program_region_boundary_validation.py"
+      ]
+    },
+    "1452": {
+      "head": "0f03dd5993bd7dcc0e58b20afdf6cae57df815df",
+      "base": "492a54ccefda5c093f39f213d3399372374d415e",
+      "clean": false,
+      "overlap": [
+        "CMakeLists.txt",
+        "cmake/VibeQCGeneratedSources.cmake",
+        "cmake/VibeQCSourceIdentity.json",
+        "cmake/VibeQCSources.cmake",
+        "python/vibeqc/_stationary_cpu.py",
+        "python/vibeqc/_stationary_cpu_components.py",
+        "python/vibeqc/_stationary_cpu_streaming.py",
+        "python/vibeqc_compiler/integral/first_derivative_native.py",
+        "python/vibeqc_compiler/integral/first_derivative_schedule.py",
+        "src/integrals/first_derivative_component_runtime.hpp",
+        "src/integrals/stationary_component_contract.cpp",
+        "tests/python/test_ecp_public_cpu.py",
+        "tests/python/test_stationary_cpu_derivative_aot.py",
+        "tools/generate_stationary_cpu_derivative_aot.py"
+      ]
+    },
+    "1453": {
+      "head": "344b6fa480b078c1fcd7a7298dd7c9fca716bd97",
+      "base": "38a9692be863e97072134623623f72e15131ccd4",
+      "clean": false,
+      "overlap": [
+        "src/cc/rccsdt_force.cpp",
+        "src/cc/rccsdt_force.hpp",
+        "src/methods/rccsd_method.cpp"
+      ],
+      "tests_exit": 0,
+      "candidate": "7f3453b6c11b94e35fc4984333675b12374c7c30"
+    }
+  },
+  "provenance_probe_exit": 0
+}

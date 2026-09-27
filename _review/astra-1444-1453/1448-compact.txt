@@ -1,0 +1,47 @@
+head 1434916287df7c2ce1ceb42c4adf0d48fe0529c0
+master c308ff84dd0fb68a83a027ae02206fe98ac7c7ee
+d97f153c013ed550acf98746460d68eb0c9a4fd6
+100644 2be09b8d089a487dbf321d284cc02f51a8759f6d 2	tests/python/test_program_region_boundary_validation.py
+100644 5f3a3b2e38b91e0bdbbe83bfb904d2b08a18de26 3	tests/python/test_program_region_boundary_validation.py
+
+Auto-merging tests/python/test_program_region_boundary_validation.py
+CONFLICT (add/add): Merge conflict in tests/python/test_program_region_boundary_validation.py
+
+=== HEAD VERSUS MASTER: python/vibeqc_compiler/common/program_region.py ===
+
+=== HEAD VERSUS MASTER: tests/python/test_program_ir_region.py ===
+
+=== HEAD VERSUS MASTER: tests/python/test_program_region_boundary_validation.py ===
+diff --git a/tests/python/test_program_region_boundary_validation.py b/tests/python/test_program_region_boundary_validation.py
+index 2be09b8d..5f3a3b2e 100644
+--- a/tests/python/test_program_region_boundary_validation.py
++++ b/tests/python/test_program_region_boundary_validation.py
+@@ -101,9 +101,7 @@ def test_derived_region_preserves_ordered_multiple_outputs() -> None:
+     fused = apply_program_region_candidate(program, _candidate(region))
+     assert fused.calls[0].reads == ("x",)
+     assert fused.calls[0].writes == ("b", "c")
+-    assert tuple(buffer.name for buffer in fused.buffers) == (
+-        "x", "y", "b", "c", "out"
+-    )
++    assert tuple(buffer.name for buffer in fused.buffers) == ("x", "y", "b", "c", "out")
+     assert fused.inputs == program.inputs
+     assert fused.outputs == program.outputs
+ 
+
+=== CONFLICT: tests/python/test_program_region_boundary_validation.py ===
+<<<<<<< 1434916287df7c2ce1ceb42c4adf0d48fe0529c0
+    assert tuple(buffer.name for buffer in fused.buffers) == (
+        "x", "y", "b", "c", "out"
+    )
+=======
+    assert tuple(buffer.name for buffer in fused.buffers) == ("x", "y", "b", "c", "out")
+>>>>>>> c308ff84dd0fb68a83a027ae02206fe98ac7c7ee
+    assert fused.inputs == program.inputs
+    assert fused.outputs == program.outputs
+
+
+def test_fallback_retains_original_program_object() -> None:
+    program = _program()
+    candidate = _candidate(_region(program), fallback=True)
+    assert apply_program_region_candidate(program, candidate) is program
+
