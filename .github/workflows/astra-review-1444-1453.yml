@@ -4,7 +4,8 @@ on:
     branches: [review/astra-1444-1453-20260927]
     paths:
       - .github/workflows/astra-review-1444-1453.yml
-      - .github/scripts/astra-review-1444-1453.py
+      - .github/scripts/astra-next-review.py
+      - .github/scripts/astra-fix-xc-binding.py
 permissions:
   contents: write
 concurrency:
@@ -32,7 +33,7 @@ jobs:
             +refs/pull/1453/head:refs/remotes/upstream/pr-1453
           python3 -m venv /tmp/astra-review-env
           /tmp/astra-review-env/bin/pip -q install pytest numpy scipy sympy pyyaml ruff
-          /tmp/astra-review-env/bin/python .github/scripts/astra-review-1444-1453.py
+          /tmp/astra-review-env/bin/python .github/scripts/astra-next-review.py
       - name: Retain diagnostics only on scratch branch
         if: always()
         shell: bash
