@@ -335,13 +335,13 @@ STATIONARY_NUCLEAR_PAIR_LOOP_CONTRACT_SHA256 = (
     "5a69bf4fd85d28b137e1ae35bce4a1d32134375bbaca9f66f60c9377a0c8f935"
 )
 STATIONARY_ENDPOINT_OWNER_CONTRACT_SHA256 = (
-    "67552ed943569e291d37524644d7311d77b9c8cda133d91f6107817d2d66b385"
+    "30bfb80d163919deb7d0ca906bedd6b651d90e17b43ce630989e7c428b0dd0f1"
 )
 STATIONARY_AO_MAP_RESERVE_CONTRACT_SHA256 = (
     "c2ba1b47e5655f75196c79384079d4ecd9c1edf9fe9aa1e97e339e96cbbaad0a"
 )
 STATIONARY_AO_MAP_CACHE_CONTRACT_SHA256 = (
-    "dcf02f08e8d0279dcb49f2093d0ac3bf023523a7519a0faf6537fc9140711c9f"
+    "e78eb59bf0022beffbf019444c965e4e3e8f651f906b7b1541aba457959c57dc"
 )
 STATIONARY_TILE_RESOURCE_CONTRACT_SHA256 = (
     "5e6761e56e54ac7720a3c215cf524a93024de0df00ed9b33e83c8a32ffda2b3f"
@@ -359,13 +359,13 @@ SNAPSHOT_GRID_CACHE_CONTRACT_SHA256 = (
     "569705abf406d2ec00ec9526e84f23301448d5511fc2bf79ee9ef6993a794ca6"
 )
 STATIONARY_PUBLIC_WRAPPER_CONTRACT_SHA256 = (
-    "fdc50e612544de72683bd4a421709333c763244ec01977682fafbf0bdcf2562e"
+    "7b9a82b259fc652a6a10a2ea90020dec5afeca904f4679baaf8cf31d0bf268dd"
 )
 NATIVE_STATIONARY_OWNER_CONTRACT_SHA256 = (
     "47af7a99e4aadfe4386e1a798e619ff52aea3143a254c7cbffcca08ee9b1c1db"
 )
 NATIVE_STATIONARY_ALLOCATION_CONTRACT_SHA256 = (
-    "b0e739be97cb1048b86efeaa5c9b116cce1ac76f056e1ac610971f91df08129e"
+    "4fd148d906538720ab568b0f7aa056e2d2b112b009c26eb9f4c08156f8f38a15"
 )
 NATIVE_STATIONARY_CREATE_CONTRACT_SHA256 = (
     "e3c05c687211842a710c0cada57e96b787992389c5e9a8799191655d07ae05b3"
@@ -408,10 +408,10 @@ NATIVE_STATIONARY_FINISH_SPAN_CONTRACT_SHA256 = (
     "3f12a2c23709399c56776e34f5d7cd2394a95e153f754694bb7d523772efa431"
 )
 PREPARED_AOT_SELECTION_CONTRACT_SHA256 = (
-    "a9d5f920839f2a020b17addaddb8e00c674bf78e37f112a113751d67ef336224"
+    "543a82fd68894b485deb025825efb2e93ae61a0942a2da6f0326ddbd5937da27"
 )
 PREPARED_AO_REQUEST_CONTRACT_SHA256 = (
-    "ef5b67eebcd197e3c470f4b244252cbaae74daa2e8aeb3e58ee486f3ecaa8355"
+    "a241beee3699b72cc945c162e6422a658381cd30c1dbfe37606ee704d95d521b"
 )
 PRIMITIVE_SUM_DEFINITION = (
     "sum((int(row[2]) * len(expansion) for row, expansion in "
@@ -444,7 +444,7 @@ GRID_PLAN_DEFINITION = (
     "tile_points=tile_points, active_ao_capacity=n, budget_bytes=max_device_bytes)"
 )
 GEOMETRY_RESOURCES_CONTRACT_SHA256 = (
-    "0addc7ec684aa1e2116fb0f52d328a9717484b79009e9c236107f4f55bb19563"
+    "7949d2b5f585c0f5cadeaa8a6f52426355821046b209422d0947835093eb0da4"
 )
 MINIMUM_SOURCE_BYTES_DEFINITION = (
     "stationary_cuda_allocation_bytes(atoms=na, aos=n, primitives=basis.nprimitive, "
@@ -1107,7 +1107,7 @@ def _source_limits(repository: Path) -> dict[str, Any]:
         raise RuntimeError("stationary CUDA ordinary tile-resource contract changed")
     page_contract["ordinary_tile_resources_sha256"] = resource_owner_digest
     signature = inspect.signature(complete_rks_cuda_gradient_diagnostic)
-    if signature.parameters["resident_ao_cutoff"].default is not None:
+    if signature.parameters["resident_ao_cutoff"].default != "auto":
         raise RuntimeError("stationary CUDA default AO membership changed")
     ao_reserves = [
         node
