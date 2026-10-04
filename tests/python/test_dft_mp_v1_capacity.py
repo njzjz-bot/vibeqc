@@ -284,7 +284,7 @@ def test_report_exposes_exact_first_gate_and_all_losing_work() -> None:
         "task_executor.execute_pages(domain, submit_page)"
     )
     assert result["admission_limits"]["primitive_page_contract_sha256"] == {
-        "geometry_resources_sha256": "0addc7ec684aa1e2116fb0f52d328a9717484b79009e9c236107f4f55bb19563",
+        "geometry_resources_sha256": "6a39db0e2971b776e54a056f1ca2e57c1637e7d5a85c0c6d605682ff92189399",
         "public_wrapper_sha256": (
             "fdc50e612544de72683bd4a421709333c763244ec01977682fafbf0bdcf2562e"
         ),
@@ -301,7 +301,7 @@ def test_report_exposes_exact_first_gate_and_all_losing_work() -> None:
             "5e6761e56e54ac7720a3c215cf524a93024de0df00ed9b33e83c8a32ffda2b3f"
         ),
         "initializer_sha256": (
-            "7bb03b7286a5868527104420a74f4749c8af92360f17ad12ced31051a7ae9d75"
+            "7b3e71ce4e3821ee697ce52c9770263858c094b90cf263e9a7507bcd8f9aee78"
         ),
         "flush_sha256": (
             "1c2e0bb83a12eed7113825855cbe2164f53366b6bb270dd6c1247b498737c77b"
@@ -337,16 +337,16 @@ def test_report_exposes_exact_first_gate_and_all_losing_work() -> None:
             "5a69bf4fd85d28b137e1ae35bce4a1d32134375bbaca9f66f60c9377a0c8f935"
         ),
         "endpoint_owner_sha256": (
-            "67552ed943569e291d37524644d7311d77b9c8cda133d91f6107817d2d66b385"
+            "1cdb7080aa43ea0b04cf82c752b18e5f0376aaa9701ba3e063d5e55bfaed6797"
         ),
         "native_owner_sha256": (
-            "47af7a99e4aadfe4386e1a798e619ff52aea3143a254c7cbffcca08ee9b1c1db"
+            "de78cc8efd5e7c86f54862caf42c5269cdea6a9791f5cde776480fc660540b20"
         ),
         "native_allocation_sha256": (
             "b0e739be97cb1048b86efeaa5c9b116cce1ac76f056e1ac610971f91df08129e"
         ),
         "native_create_sha256": (
-            "e3c05c687211842a710c0cada57e96b787992389c5e9a8799191655d07ae05b3"
+            "4e0dfc6c59fa2358a0cc8c1ca20f00853f294c5632b72089dfac6ab9360239d1"
         ),
         "native_reset_sha256": (
             "e0bdfb373199c744de1dea05e912f7bbd24dff59b7e9a27e08e899bcaec8c1fc"
@@ -361,16 +361,16 @@ def test_report_exposes_exact_first_gate_and_all_losing_work() -> None:
             "d4830d6d9695219f4bf4c59611717b943c7aa1da016fdba67ceb6036241f1dc0"
         ),
         "native_geometry_external_sha256": (
-            "e5a36f9b80f332b1e03a48e2b3c066e583b1ba9340b7a5feab4dab3d292be236"
+            "7270f2f21f44baf101f9e503f9238dd972f729e431a95b3dd0212311014fe601"
         ),
         "native_geometry_enqueue_sha256": (
-            "cdac623e8296338a03b3b81bd3e77fbacb36730d4fb4502a2adbb6921a5f9544"
+            "ff5b6e5a6790cc2a75d29906011cf863e04dac04930205d09fc36dcacdaac9e1"
         ),
         "native_geometry_route_sha256": (
             "3fc0a5f613dfaa01ab02104e15929680f3f61fa17c07d59d54241201f903d476"
         ),
         "native_launch_geometry_sha256": (
-            "7a06757b893e51c6924675c88c66c6d0817923904283bf48378fb4e8302f47be"
+            "a6f197f1ac3fa905f87a8b1d29b083fa51af9c14f57afabb05ad1376a1496264"
         ),
         "native_configure_becke_sha256": (
             "dc844781c888d1bdd281238d4dd23c76048d17f816cb81b5a0616756a22ffe91"
@@ -2220,16 +2220,24 @@ def test_snapshot_grid_cache_identity_and_cap_changes_fail_closed(
         qualify_capacity._source_limits(tmp_path)
 
 
-def test_geometry_resource_budget_changes_fail_closed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (
+            "GEOMETRY_MAX_SCRATCH_BYTES = 8 << 20",
+            "GEOMETRY_MAX_SCRATCH_BYTES = 16 << 20",
+        ),
+        ("phased_becke: bool = False", "phased_becke: bool = True"),
+    ],
+)
+def test_geometry_resource_budget_changes_fail_closed(
+    tmp_path: Path, old: str, new: str
+) -> None:
     source = (ROOT / "python/generativeqc/_stationary_cuda.py").read_text()
     stationary_contract_tree(tmp_path, source)
     path = tmp_path / "python/generativeqc_compiler/method/stationary_resources.py"
-    path.write_text(
-        path.read_text().replace(
-            "GEOMETRY_MAX_SCRATCH_BYTES = 8 << 20",
-            "GEOMETRY_MAX_SCRATCH_BYTES = 16 << 20",
-        )
-    )
+    assert old in path.read_text()
+    path.write_text(path.read_text().replace(old, new))
     with pytest.raises(RuntimeError, match="geometry-resource contract changed"):
         qualify_capacity._source_limits(tmp_path)
 

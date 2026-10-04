@@ -79,6 +79,8 @@ def source_hashes() -> dict[str, str]:
         "python/generativeqc/_stationary_composite_cuda.py",
         "benchmarks/readme_omol25.py",
         "benchmarks/readme_pbe0.py",
+        "benchmarks/readme_pbe0_integrated.py",
+        "benchmarks/dft_force_components.py",
         "benchmarks/readme_wb97mv.py",
         "benchmarks/compare_df_direct_endpoint.py",
         "src/scf/cuda/direct_jk.cpp",
@@ -238,7 +240,11 @@ def reference_xc_backend(engine: Any, *, spin: int = 0) -> dict[str, Any]:
     return record
 
 
-def main(benchmark: EndpointSpec = OMOL25) -> None:
+def main(
+    benchmark: EndpointSpec = OMOL25,
+    *,
+    qualification_policy: dict[str, Any] | None = None,
+) -> None:
     """Run one independent engine with shared inputs and no production switches."""
     """Journal every phase before GPU work, including failures and timeouts."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -286,6 +292,7 @@ def main(benchmark: EndpointSpec = OMOL25) -> None:
         "status": "running",
         "protocol": scientific,
         "records": [],
+        "qualification_policy": qualification_policy,
         "source_file_sha256": source_hashes(),
         "native_schedule_policy": "automatic-generated-SPD/canonical-through-f"
         if benchmark.has_vv10
