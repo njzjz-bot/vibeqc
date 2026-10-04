@@ -3,6 +3,9 @@
 Status: proposed (opt-in prototype, not a promoted schedule)
 Date: 2026-10-04
 
+Superseded by the [device qualification rejection](../rejected/2026-10-04-bounded-homogeneous-force-passes.md).
+The original proposal remains below for historical context; do not promote it.
+
 ## Problem
 
 Ordinary stationary PBE0 forces reach the shared independent J/K derivative
