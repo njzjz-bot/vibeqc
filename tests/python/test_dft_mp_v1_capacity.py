@@ -185,7 +185,7 @@ def test_frozen_capacity_report_uses_actual_basis_and_grid_identities() -> None:
             "dcfcbef93e798c62cc5669e93190a9b73184ffe120a8afc43730a9dbc74cb448"
         ),
         "prepared_aot_selection_sha256": (
-            "1c14203191273a1b3644cbbb574484b79423674e66715b3efa9764cec26723e4"
+            "a9d5f920839f2a020b17addaddb8e00c674bf78e37f112a113751d67ef336224"
         ),
     }
 
@@ -286,7 +286,13 @@ def test_report_exposes_exact_first_gate_and_all_losing_work() -> None:
     assert result["admission_limits"]["primitive_page_contract_sha256"] == {
         "geometry_resources_sha256": "0addc7ec684aa1e2116fb0f52d328a9717484b79009e9c236107f4f55bb19563",
         "public_wrapper_sha256": (
-            "662fbb487b1bb881be4fff18b177f1965094dc81e6f1b5800116ac34de7b5e2b"
+            "fdc50e612544de72683bd4a421709333c763244ec01977682fafbf0bdcf2562e"
+        ),
+        "ao_map_reserve_sha256": (
+            "c2ba1b47e5655f75196c79384079d4ecd9c1edf9fe9aa1e97e339e96cbbaad0a"
+        ),
+        "resident_ao_cache_sha256": (
+            "dcf02f08e8d0279dcb49f2093d0ac3bf023523a7519a0faf6537fc9140711c9f"
         ),
         "ordinary_tile_layout_sha256": (
             "2887f95c615859955f768bee0be2a8b47a4d424f02e686748a92321bc9f5c3a7"
@@ -331,7 +337,7 @@ def test_report_exposes_exact_first_gate_and_all_losing_work() -> None:
             "5a69bf4fd85d28b137e1ae35bce4a1d32134375bbaca9f66f60c9377a0c8f935"
         ),
         "endpoint_owner_sha256": (
-            "7916c0f782cb6e40882144c091887bb57cb67cdc12ad733531a1d79c9df87d8a"
+            "67552ed943569e291d37524644d7311d77b9c8cda133d91f6107817d2d66b385"
         ),
         "native_owner_sha256": (
             "47af7a99e4aadfe4386e1a798e619ff52aea3143a254c7cbffcca08ee9b1c1db"
@@ -2550,6 +2556,61 @@ def test_extracted_tile_admission_and_selected_owners_fail_closed(
     stationary_contract_tree(tmp_path, source.replace(old, new, 1))
     with pytest.raises(RuntimeError, match=message):
         qualify_capacity._source_limits(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "old,new,message",
+    [
+        (
+            "min(requested_bytes, max_host_bytes - host_bound)",
+            "requested_bytes",
+            "_stationary_ao_map_reserve contract changed",
+        ),
+        (
+            "    host_bound += ao_map_reserve\n",
+            "",
+            "AO-map reserve admission changed",
+        ),
+        (
+            "        grid.geometry_generation,\n",
+            "        0,\n",
+            "_stationary_resident_ao_cache contract changed",
+        ),
+        (
+            "    state._source.check_current()\n    domain = ResidentAoMapDomain(",
+            "    domain = ResidentAoMapDomain(",
+            "_stationary_resident_ao_cache contract changed",
+        ),
+        (
+            (
+                "            sum(value.host_bytes for value in tensor_plans.values())\n"
+                "            if prepared is not None\n"
+            ),
+            "            0\n            if prepared is not None\n",
+            "AO-map reserve admission changed",
+        ),
+    ],
+)
+def test_optional_resident_ao_admission_and_lifetime_fail_closed(
+    tmp_path: Path, old: str, new: str, message: str
+) -> None:
+    """Optional maps cannot escape the original cap or stale-owner checks."""
+    source = (ROOT / "python/generativeqc/_stationary_cuda.py").read_text()
+    assert old in source
+    stationary_contract_tree(tmp_path, source.replace(old, new, 1))
+    with pytest.raises(RuntimeError, match=message):
+        qualify_capacity._source_limits(tmp_path)
+
+
+def test_prepared_request_cannot_drop_the_resident_ao_policy(tmp_path: Path) -> None:
+    source = (ROOT / "python/generativeqc/_stationary_cuda.py").read_text()
+    old = '"resident_ao_cutoff": resident_ao_cutoff,'
+    assert old in source
+    stationary_contract_tree(
+        tmp_path, source.replace(old, '"resident_ao_cutoff": None,', 1)
+    )
+    with pytest.raises(RuntimeError, match="AO request contract changed"):
+        qualify_capacity._prepared_aot_route_contract(tmp_path)
 
 
 @pytest.mark.parametrize("key", ["max_grid_points", "max_grid_pair_visits"])
