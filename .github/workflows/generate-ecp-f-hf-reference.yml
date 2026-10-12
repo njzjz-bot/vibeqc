@@ -1,15 +1,7 @@
 name: Generate fixed ECP-f HF PySCF reference
 
-# Temporary, branch-specific acquisition; remove automatic trigger after retention.
+# The one-time genuine acquisition is retained; manual historical replay only.
 on:
-  push:
-    branches: [oracle/ecp-f-hf-reference-20261012]
-    paths:
-      - .github/workflows/generate-ecp-f-hf-reference.yml
-      - tools/generate_ecp_f_hf_reference.py
-      - tools/generate_cpu_hf_high_l_reference.py
-      - tools/generate_ecp_raw_matrix_reference.py
-      - tests/reference_data/ecp_f_hf/inputs.json
   workflow_dispatch:
 
 permissions:
