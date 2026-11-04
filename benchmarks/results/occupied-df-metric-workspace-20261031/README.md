@@ -1,11 +1,11 @@
 # Compact occupied DF metric workspace
 
-The bridge-owned full-rank fitted occupied response now reserves only its live
-metric matrices: one adjoint, plus a root-construction matrix for an implicit
-spectral source. Raw, borrowed, truncated and general panel consumers retain the
-four-matrix layout. Shapes are overflow-checked and actual allocation matches
-admission. No public budget, precision, quadrature, equation, threshold or GPU
-model condition changes. Bounded fallback and allocation retries remain.
+Bridge-owned full-rank fitted occupied response reserves live metric matrices:
+one adjoint and, for implicit spectral sources, one root-construction matrix.
+Raw, borrowed, truncated and general panels keep four matrices. Shapes retain
+overflow checks; allocation matches admission. Public budgets, precision,
+quadrature, equations, thresholds and GPU-model conditions are unchanged.
+Bounded fallbacks and allocation retries remain.
 
 ## Complete endpoint controls
 
@@ -25,20 +25,18 @@ not a speedup claim for the already admitted ordinary response.
 | RTX PRO 6000 | PBE0 | 6.365070 | 6.371062 |
 | RTX PRO 6000 | WB97M-V | 45.246167 | 45.243865 |
 
-`report.py` also prints every cold time and warm repeat, median and dispersion.
-The compressed observations retain work counters, SCF/Fock counts, native and
-scheduler identities, all independent per-sample gate results and paired errors.
-Maximum paired force difference is below 1.03e-12 Eh/Bohr. These controls do not
-requalify every README method or establish that every GPU beats GPU4PySCF.
-The prior native/reference WB97M-V long-range-fitting distinction still applies.
+`report.py` prints every cold time, warm repeat, median and dispersion. The
+observations retain work counters, SCF/Fock counts, native/scheduler identities,
+every independent sample gate and paired error. Maximum paired force difference:
+<1.03e-12 Eh/Bohr. This neither requalifies all README methods nor proves every
+GPU beats GPU4PySCF. Native/reference WB97M-V long-range fitting still differs.
 
 ## Memory-cliff diagnostic
 
-A separate A100 diagnostic keeps the earlier 64-MiB geometry cap and compares
-2048 versus 256 force points in the same instrumented candidate binary. Each
-arm has one cold and one warm endpoint; both pass the unchanged independent
-numerical gates. These are component diagnostics, **not promoted defaults or
-three-repeat ranking populations**.
+A separate A100 same-instrumented-binary diagnostic compares 2048/256 force
+points under the earlier 64-MiB geometry cap. Both one-cold/one-warm arms pass
+unchanged independent numerical gates: **component diagnostics, not promoted
+defaults or three-repeat rankings**.
 
 At 2048 points the warm free headroom remains exactly 954,531,840 bytes. Omitting
 three dead metric matrices saves **313,810,944 bytes**, so the 740,556,800-byte
@@ -52,10 +50,10 @@ performs zero of those repeated fits:
 | Compact workspace, 2048 points | 23.625708 | 0.920685 |
 | Compact workspace, 256 points | 25.948267 | 0.922557 |
 
-The separate long-range response remains present; it is not omitted from the
-endpoint. The original diagnostic receipts and source identities remain in the
-bundle. The production force tile and geometry cap remain unchanged. Larger
-automatic batches still require joint planning and cross-device qualification.
+Endpoints retain the separate long-range response; the bundle retains original
+diagnostic receipts/source identities. Production force tiles and geometry caps
+are unchanged. Larger automatic batches still need joint planning and
+cross-device qualification.
 
 ## Correctness and retained failures
 
@@ -68,14 +66,13 @@ molecular forces use independent PySCF references. Both Blackwell devices pass
 81 compact-adjoint and one tight-budget memcheck tests, with zero errors and
 no API-error filtering. This campaign does not claim a new A100 sanitizer pass.
 
-The first constrained test budget lacked room for the live spectral root and
-metadata; its allocation failure is retained, and the corrected test
-still uses less than the old fixed four-matrix minimum. The first A100 spectral
-probe compilation lacked conda CUDA include/library paths; after setting those
-paths, the same source tests pass. The initial host pytest and pre-commit module
-lookups used environments without those packages; successful checks use the
-installed test environment and pre-commit executable. Failed runs remain in
-ignored raw artifacts rather than being relabelled.
+Retained failures: the first constrained allocation lacked live spectral-root
+and metadata headroom; the corrected budget remains below the old four-matrix
+minimum. The first A100 spectral probe lacked conda CUDA include/library paths;
+setting them made the unchanged source pass. Initial host pytest/pre-commit
+module lookups lacked those packages; passing checks use the installed test
+environment/pre-commit executable. Failed runs remain in ignored raw artifacts,
+not relabelled.
 
 Host validation includes 109 response/resource tests, 63 catalog tests and all
 684 CI ownership tests across the original run and one corrected timeout-policy
@@ -102,9 +99,9 @@ test jobs' successful client exits and receipts are retained, with no invented
 historical scheduler status. Actual device visibility is preserved throughout. Diagnostic sources and the
 ordinary A100 core were restored and verified against their original hashes.
 
-Full raw receipts, forces, traces, failures, build logs and local binary
-identities are retained in ignored `.artifacts/df-metric-workspace-20261031/`.
-The compact bundle cannot reconstruct omitted force arrays.
+Full raw receipts, forces, traces, failures, build logs and local binary identities
+remain in ignored `.artifacts/df-metric-workspace-20261031/`. This compact bundle
+cannot reconstruct omitted force arrays.
 
 See the [workspace decision](../../../.agents/notes/implemented/performance/2026-10-31-occupied-response-metric-workspace.md)
 and [grid batching investigation](../../../.agents/notes/proposed/2026-10-31-stationary-grid-batching.md).
