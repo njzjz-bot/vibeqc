@@ -1,4 +1,4 @@
-name: Isolated catalog integration for PR 3044
+name: Isolated ccache download diagnosis
 
 on:
   push:
@@ -8,192 +8,89 @@ on:
 permissions:
   contents: read
 
-env:
-  PYTHONDONTWRITEBYTECODE: '1'
-  PYTHONPATH: 'python:.'
-
 jobs:
-  catalog:
+  download:
     if: github.repository == 'njzjz-bot/vibeqc'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
-      - name: Check out the exact production candidate
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: njzjz-bot/vibeqc
-          ref: d4c923a06084d5c345439c727ed089c659c3c54b
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Install wheel-only catalog dependencies
+      - name: Verify the same official ccache archive through both entry points
         shell: bash
+        env:
+          CCACHE_PROBE_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/catalog-venv"
-          "$RUNNER_TEMP/catalog-venv/bin/python" -m pip install --only-binary=:all: 'numpy==2.1.3' 'array-api-compat>=1.15.0' 'typing-extensions>=4.0'
-      - name: Generate and verify the two catalog files
-        shell: bash
-        run: |
-          set -euo pipefail
-          "$RUNNER_TEMP/catalog-venv/bin/python" - <<'PY'
-          import base64
+          python3 - <<'PY'
           import hashlib
           import json
-          import lzma
           import os
-          import re
           import subprocess
-          import sys
+          import tarfile
           from pathlib import Path
           
-          CANDIDATE = "d4c923a06084d5c345439c727ed089c659c3c54b"
-          CANDIDATE_TREE = "5c508d0731d205abc741005d38da04cdf0da6829"
-          OURS = "fe2e6fb31f39db9c24eb44e6299f5371c5f09ec6"
-          MASTER = "1eeb9a20e7d4350f2dbbeaa736f59144def5348b"
-          BASE = "fea412df1c0b67f1ffaea777b2f239d08c731533"
-          SNAP = Path("manifests/libxc/native-qualification-snapshot.json.xz")
-          MANIFEST = Path("manifests/libxc/native-qualification.json")
-          PREVIOUS = Path("manifests/libxc/native-qualification-previous.json.xz")
-          REPORT = Path("docs/reference/libxc_qualification.md")
-          ALLOWED = {SNAP.as_posix(), REPORT.as_posix()}
-          
-          def require(ok, message):
-              if not ok:
-                  raise RuntimeError(message)
-          
-          def git(*args):
-              return subprocess.check_output(["git", *args], text=True).strip()
-          
-          def run(*args):
-              subprocess.run(args, check=True)
-          
-          def tree_entries(ref):
-              result = {}
-              for item in subprocess.check_output(["git", "ls-tree", "-r", "-z", ref]).split(b"\0"):
-                  if not item:
-                      continue
-                  meta, path = item.split(b"\t", 1)
-                  result[path.decode()] = tuple(meta.decode().split())
-              return result
-          
-          def read_xz(path):
-              return json.loads(lzma.decompress(path.read_bytes()))
-          
-          require(git("rev-parse", "HEAD") == CANDIDATE, "wrong candidate HEAD")
-          require(git("rev-parse", "HEAD^{tree}") == CANDIDATE_TREE, "wrong candidate tree")
-          require(git("show", "-s", "--format=%P", "HEAD").split() == [OURS, MASTER], "candidate parents")
-          require(git("merge-base", OURS, MASTER) == BASE, "unexpected common base")
-          require(not git("status", "--porcelain"), "candidate checkout must be clean")
-          
-          base, ours, theirs, candidate = (tree_entries(ref) for ref in (BASE, OURS, MASTER, CANDIDATE))
-          our_changes = {p for p in base.keys() | ours.keys() if base.get(p) != ours.get(p)}
-          their_changes = {p for p in base.keys() | theirs.keys() if base.get(p) != theirs.get(p)}
-          require(our_changes & their_changes == ALLOWED, "overlap exceeds the two catalog files")
-          require(len(their_changes) == 12, "unexpected master change set")
-          expected = dict(ours)
-          for path in their_changes - ALLOWED:
-              if path in theirs:
-                  expected[path] = theirs[path]
-              else:
-                  expected.pop(path, None)
-          require(candidate == expected, "candidate is not the exact union of the two source trees")
-          require(MANIFEST.as_posix() in ours, "AD manifest missing")
-          for path, sha in (
-              (MANIFEST, "67a537db122295f38b31f77a1ebecb499a87eeac"),
-              (PREVIOUS, "1e017317af57618e1c0d132167e24d4f18060724"),
-              (SNAP, "01748c2e28937edbabafb6186d882484a1c3af89"),
-              (REPORT, "ffe5d132f583f750563dd36b9729898d09c33046"),
-          ):
-              require(git("hash-object", str(path)) == sha, "accepted AD input changed: " + str(path))
-          
-          manifest_bytes = MANIFEST.read_bytes()
-          previous_bytes = PREVIOUS.read_bytes()
-          manifest = json.loads(manifest_bytes)
-          previous = read_xz(PREVIOUS)
-          before = read_xz(SNAP)
-          old_report = REPORT.read_text()
-          require(manifest["previous"]["path"] == PREVIOUS.as_posix(), "previous path")
-          require(manifest["previous"]["source_commit"] == "373f67df3183b3e9fd32fae577019e5e4082b066", "accepted AD parent")
-          require(manifest["previous"]["sha256"] == "f945e3be190eb939195be42083cb4477ba6ac3194b89416873da8632c3d9d7c7", "accepted AD binding")
-          require(hashlib.sha256(previous_bytes).hexdigest() == manifest["previous"]["sha256"], "actual previous bytes")
-          require(before["summary"] == previous, "accepted AD summary must already equal previous")
-          require(manifest["acknowledgements"] == [], "accepted acknowledgements")
-          require(not any(v for k, v in before["changes"].items() if k != "schema"), "accepted transitions must be empty")
-          require(before["stale"] is True and not before["observed_endpoints"] and not before["endpoints"], "retained evidence scope")
-          
-          run(sys.executable, "tools/check_libxc_native_catalog.py", "--write")
-          run(sys.executable, "tools/check_libxc_native_catalog.py")
-          after = read_xz(SNAP)
-          require(before.keys() == after.keys(), "snapshot schema keys changed")
-          changed = {k for k in before if before[k] != after[k]}
-          require(changed == {"source_identity", "native_source_identity"}, "unexpected snapshot changes: " + repr(changed))
-          require(MANIFEST.read_bytes() == manifest_bytes, "manifest changed")
-          require(PREVIOUS.read_bytes() == previous_bytes, "previous changed")
-          expected_report = old_report
-          tick = chr(96)
-          for key, label in (
-              ("source_identity", "Current checked source inputs"),
-              ("native_source_identity", "Current checked native input identity"),
-          ):
-              require(re.fullmatch("[0-9a-f]{64}", after[key]) is not None, "invalid generated identity")
-              old_line = f"{label}: {tick}{before[key]}{tick}."
-              new_line = f"{label}: {tick}{after[key]}{tick}."
-              require(expected_report.count(old_line) == 1, "missing exact old identity line")
-              expected_report = expected_report.replace(old_line, new_line)
-          require(REPORT.read_text() == expected_report, "report changed outside the two live IDs")
-          changed_paths = set(git("diff", "--name-only").splitlines())
-          require(changed_paths == ALLOWED, "generator changed unexpected paths")
-          require(not git("ls-files", "--others", "--exclude-standard"), "unexpected untracked output")
-          run("git", "diff", "--check")
-          run("git", "add", "--", *sorted(ALLOWED))
-          require(not git("diff", "--name-only"), "unstaged changes after staging")
-          require(set(git("diff", "--cached", "--name-only").splitlines()) == ALLOWED, "unexpected staged paths")
-          run(sys.executable, "tools/compact_evidence_publications.py", "--check")
-          evidence_path = Path(os.environ["RUNNER_TEMP"]) / "catalog-evidence-change.json"
-          run(sys.executable, "tools/evidence.py", "check-change", "--base", MASTER, "--output", str(evidence_path))
-          run("git", "diff", "--cached", "--check")
-          run("git", "diff", "--exit-code")
-          result_tree = git("write-tree")
-          result_entries = tree_entries(result_tree)
-          require({p for p in candidate.keys() | result_entries.keys() if candidate.get(p) != result_entries.get(p)} == ALLOWED, "output tree changed non-catalog entries")
-          blobs = []
-          for path in (REPORT, SNAP):
-              data = path.read_bytes()
-              sha = git("hash-object", str(path))
-              require(result_entries[str(path)] == ("100644", "blob", sha), "output mode/blob mismatch")
-              blobs.append({
-                  "path": str(path),
-                  "mode": "100644",
-                  "sha": sha,
-                  "size": len(data),
-                  "sha256": hashlib.sha256(data).hexdigest(),
-                  "base64": base64.b64encode(data).decode("ascii"),
-              })
-          from tools.generativeqc_validation.retention import tracked_blobs, POLICY_PATH, RESULT_ROOT
-          tracked = tracked_blobs(Path.cwd())
-          policy = json.loads(tracked[POLICY_PATH])
-          used = sum(len(data) for path, data in tracked.items() if path.startswith(RESULT_ROOT))
-          aggregate = {"bytes": used, "max_bytes": policy["benchmark_results_max_bytes"], "remaining_bytes": policy["benchmark_results_max_bytes"] - used}
-          receipt = {
-              "candidate": CANDIDATE,
-              "candidate_tree": CANDIDATE_TREE,
-              "parents": [OURS, MASTER],
-              "master": MASTER,
-              "common_base": BASE,
-              "tree": result_tree,
-              "source_identity": after["source_identity"],
-              "native_source_identity": after["native_source_identity"],
-              "snapshot_changed_keys": sorted(changed),
-              "before_live_ids": {k: before[k] for k in sorted(changed)},
-              "preserved_manifest_blob": git("hash-object", str(MANIFEST)),
-              "preserved_previous_blob": git("hash-object", str(PREVIOUS)),
-              "aggregate": aggregate,
-              "historical_and_ad_catalog_preserved": True,
-              "evidence": json.loads(evidence_path.read_text()),
-              "blobs": blobs,
-          }
-          print("CATALOG_RESULT_BEGIN")
+          expected = "45a91165db7092e67c6208ada03f54700e684c4cd3735f9031de95669ed9272c"
+          root = Path(os.environ["RUNNER_TEMP"]) / "ccache-download-probe"
+          root.mkdir()
+          cases = [
+              ("original_release", "https://github.com/ccache/ccache/releases/download/v4.14/ccache-4.14-linux-x86_64-glibc.tar.xz", []),
+              ("official_asset_api", "https://api.github.com/repos/ccache/ccache/releases/assets/526043228", [
+                  "--header", "Accept: application/octet-stream",
+                  "--header", "X-GitHub-Api-Version: 2022-11-28",
+                  "--header", "Authorization: Bearer " + os.environ["CCACHE_PROBE_TOKEN"],
+              ]),
+          ]
+          results = []
+          valid = None
+          for name, url, headers in cases:
+              archive = root / (name + ".tar.xz")
+              header_file = root / (name + ".headers")
+              command = [
+                  "curl", "--fail", "--silent", "--show-error", "--location",
+                  "--retry", "3", "--retry-delay", "2", "--retry-max-time", "60",
+                  "--connect-timeout", "15", "--max-time", "60",
+                  "--dump-header", str(header_file), "--output", str(archive),
+                  "--write-out", "%{http_code} %{num_redirects} %{size_download} %{time_total}",
+                  *headers, url,
+              ]
+              run = subprocess.run(command, capture_output=True, text=True)
+              data = archive.read_bytes() if archive.exists() else b""
+              digest = hashlib.sha256(data).hexdigest()
+              verified = run.returncode == 0 and len(data) == 1344580 and digest == expected
+              selected_headers = []
+              if header_file.exists():
+                  for line in header_file.read_text(errors="replace").splitlines():
+                      if line.lower().startswith(("http/", "server:", "x-github-request-id:", "x-cache:", "via:")):
+                          selected_headers.append(line)
+              result = {
+                  "endpoint": name,
+                  "returncode": run.returncode,
+                  "transfer": run.stdout.strip(),
+                  "stderr": run.stderr.strip(),
+                  "bytes": len(data),
+                  "sha256": digest,
+                  "verified_original_asset": verified,
+                  "response_headers": selected_headers,
+              }
+              print(json.dumps(result, sort_keys=True), flush=True)
+              results.append(result)
+              if verified:
+                  valid = archive
+          version = None
+          if valid is not None:
+              extracted = root / "verified-extraction"
+              extracted.mkdir()
+              with tarfile.open(valid) as archive:
+                  archive.extractall(extracted, filter="data")
+              binary = extracted / "ccache-4.14-linux-x86_64-glibc" / "ccache"
+              run = subprocess.run([str(binary), "--version"], capture_output=True, text=True)
+              version = {"returncode": run.returncode, "first_line": run.stdout.splitlines()[0] if run.stdout else "", "stderr": run.stderr}
+              if run.returncode or version["first_line"] != "ccache version 4.14":
+                  raise RuntimeError("Verified upstream ccache did not report expected version")
+          receipt = {"asset_id": 526043228, "expected_bytes": 1344580, "expected_sha256": expected, "probes": results, "version": version}
+          print("CCACHE_PROBE_RESULT_BEGIN")
           print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
-          print("CATALOG_RESULT_END")
+          print("CCACHE_PROBE_RESULT_END")
+          if valid is None:
+              raise SystemExit(1)
           
           PY
