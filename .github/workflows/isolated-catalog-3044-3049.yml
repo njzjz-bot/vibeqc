@@ -1,4 +1,4 @@
-name: Isolated CI download contract verification
+name: Isolated observed HTTP2 recovery verification
 on:
   push:
     branches:
@@ -13,7 +13,7 @@ jobs:
       - name: Check out exact test correction candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: e469f1b34a1244fcede58042f22f259a6d33b5f2
+          ref: 12583f42b7c990007dff9bc365e94db14ea71c71
           fetch-depth: 0
           persist-credentials: false
       - name: Install the same pinned uv
@@ -51,17 +51,19 @@ jobs:
           def git(*args):
               return subprocess.check_output(["git", *args], text=True).strip()
           
-          assert git("rev-parse", "HEAD") == "e469f1b34a1244fcede58042f22f259a6d33b5f2"
-          assert git("rev-parse", "HEAD^{tree}") == "7021de6ef8feae35649c1d98a75dd64af6e19a3a"
+          assert git("rev-parse", "HEAD") == "12583f42b7c990007dff9bc365e94db14ea71c71"
+          assert git("rev-parse", "HEAD^{tree}") == "821043dbf462b814d298f36f815c3f78a3e321fb"
           expected = {
+              ".github/scripts/prepare_ci_tools.py",
               "tests/python/test_ci_ccache_download.py",
               ".agents/notes/implemented/compatibility/2026-11-08-pinned-ci-tool-download-recovery.md",
           }
           changed = set(git("diff", "--name-only", "4656b0f48ed349ca9a52dbccb292a04bc1b79665", "HEAD").splitlines())
           assert changed == expected, changed
-          assert git("rev-parse", "HEAD:tests/python/test_ci_ccache_download.py") == "37ef7e8cf72d0384b48803e2cbd12f4e4122b885"
-          assert git("rev-parse", "HEAD:.agents/notes/implemented/compatibility/2026-11-08-pinned-ci-tool-download-recovery.md") == "c683649eaeefcfc8fdf5c05b2515cadd720cd83f"
-          for path in (".github/scripts/prepare_ci_tools.py", ".github/workflows/ci.yml", ".github/workflows/docs.yml"):
+          assert git("rev-parse", "HEAD:tests/python/test_ci_ccache_download.py") == "f4891d42028043b5fbe99ce00bb11657f77f9429"
+          assert git("rev-parse", "HEAD:.agents/notes/implemented/compatibility/2026-11-08-pinned-ci-tool-download-recovery.md") == "9c88a827dc9a1bcce89bae06043c8894e694dde9"
+          assert git("rev-parse", "HEAD:.github/scripts/prepare_ci_tools.py") == "9905389f7ec153328c3fed83ecfcdf7783694036"
+          for path in (".github/workflows/ci.yml", ".github/workflows/docs.yml"):
               assert git("rev-parse", "HEAD:" + path) == git("rev-parse", "4656b0f48ed349ca9a52dbccb292a04bc1b79665:" + path)
           def inventory(ref):
               return [path for path in git("ls-tree", "-r", "--name-only", ref, "tests/python").splitlines() if path.endswith(".py")]
@@ -79,22 +81,23 @@ jobs:
           suites = list(junit.getroot().iter("testsuite"))
           tests = sum(int(x.attrib.get("tests", 0)) for x in suites)
           failures = sum(int(x.attrib.get("failures", 0)) + int(x.attrib.get("errors", 0)) + int(x.attrib.get("skipped", 0)) for x in suites)
-          assert tests == 21 and failures == 0, (tests, failures)
+          assert tests == 44 and failures == 0, (tests, failures)
           subprocess.run(["git", "diff", "--check"], check=True)
           assert git("status", "--porcelain") == "", git("status", "--porcelain")
           result = {
-              "candidate": "e469f1b34a1244fcede58042f22f259a6d33b5f2", "tree": "7021de6ef8feae35649c1d98a75dd64af6e19a3a",
-              "test_blob": "37ef7e8cf72d0384b48803e2cbd12f4e4122b885",
-              "note_blob": "c683649eaeefcfc8fdf5c05b2515cadd720cd83f",
+              "candidate": "12583f42b7c990007dff9bc365e94db14ea71c71", "tree": "821043dbf462b814d298f36f815c3f78a3e321fb",
+              "test_blob": "f4891d42028043b5fbe99ce00bb11657f77f9429",
+              "note_blob": "9c88a827dc9a1bcce89bae06043c8894e694dde9",
               "python": sys.version.split()[0], "pytest": __import__("pytest").__version__,
               "workers": 4, "tests_passed": tests,
-              "production_helper_and_workflows": "unchanged",
+              "production_workflows": "unchanged", "helper_blob": "9905389f7ec153328c3fed83ecfcdf7783694036",
+              "helper_change": "exact observed HTTP2 refusal and exact URL token only",
               "test_module_inventory": "unchanged",
               "catalog": "original read-only checker passed",
               "publication_compaction": "passed", "evidence": evidence,
               "clean_checkout": True,
           }
-          print("CI_TEST_CORRECTION_PREFLIGHT_BEGIN")
+          print("CI_HTTP2_CORRECTION_PREFLIGHT_BEGIN")
           print(json.dumps(result, indent=2, sort_keys=True))
-          print("CI_TEST_CORRECTION_PREFLIGHT_END")
+          print("CI_HTTP2_CORRECTION_PREFLIGHT_END")
           PY
