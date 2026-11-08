@@ -1,184 +1,100 @@
-name: Isolated CI tool recovery verification
-
+name: Isolated CI download contract verification
 on:
   push:
     branches:
       - codex/catalog-3044-after-3049-20261108
-
 permissions:
   contents: read
-
-env:
-  PYTHONDONTWRITEBYTECODE: '1'
-  PYTHONPATH: 'python:.'
-
 jobs:
   verify:
-    if: github.repository == 'njzjz-bot/vibeqc'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Check out exact recovery candidate
+      - name: Check out exact test correction candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          repository: njzjz-bot/vibeqc
-          ref: 4656b0f48ed349ca9a52dbccb292a04bc1b79665
+          ref: e469f1b34a1244fcede58042f22f259a6d33b5f2
           fetch-depth: 0
           persist-credentials: false
-      - name: Install pinned uv and offline catalog dependencies
+      - name: Install the same pinned uv
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/ci-preflight-env"
-          "$RUNNER_TEMP/ci-preflight-env/bin/python" -m pip install --only-binary=:all: 'uv==0.10.7' 'numpy==2.1.3' 'array-api-compat>=1.15.0' 'typing-extensions>=4.0'
-      - name: Verify real pinned assets and environment recovery
-        shell: bash
+          python3 -m venv "$RUNNER_TEMP/download-test-tools"
+          "$RUNNER_TEMP/download-test-tools/bin/python" -m pip install --only-binary=:all: uv==0.10.7
+          printf '%s\n' "$RUNNER_TEMP/download-test-tools/bin" >> "$GITHUB_PATH"
+      - name: Prepare the original CI Python environment
         env:
           GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/prepare_ci_tools.py python-venv
+      - name: Install only contract and offline checker dependencies
+        run: |
+          uv pip install --python .venv/bin/python --only-binary=:all: \
+            pytest==9.2.0 pytest-xdist==3.8.0 numpy==2.1.3 \
+            'array-api-compat>=1.15.0' 'typing-extensions>=4.0'
+      - name: Reproduce the four-worker CI collection contract
+        env:
+          PYTHONPATH: "${{ github.workspace }}/python:${{ github.workspace }}"
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: |
+          .venv/bin/python -m pytest -q -p xdist.plugin -n 4 --dist=load \
+            tests/python/test_ci_ccache_download.py \
+            --junitxml="$RUNNER_TEMP/ci-download-contract.xml"
+      - name: Verify exact scope, catalog and retained evidence
+        env:
+          PYTHONPATH: "${{ github.workspace }}/python:${{ github.workspace }}"
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import importlib.util
-          import json
-          import os
-          import shutil
-          import subprocess
-          import sys
-          import tempfile
-          from pathlib import Path
+          .venv/bin/python - <<'PY'
+          import json, os, pathlib, subprocess, sys, xml.etree.ElementTree as ET
           
-          repo = Path.cwd()
-          helper = repo / ".github/scripts/prepare_ci_tools.py"
-          target = "4656b0f48ed349ca9a52dbccb292a04bc1b79665"
-          tree = "9d9bc75753f10eedacc50b9c0c55de1dbb6c6160"
-          def require(ok, message):
-              if not ok:
-                  raise RuntimeError(message)
           def git(*args):
               return subprocess.check_output(["git", *args], text=True).strip()
-          require(git("rev-parse", "HEAD") == target, "wrong candidate")
-          require(git("rev-parse", "HEAD^{tree}") == tree, "wrong tree")
-          require(not git("status", "--porcelain"), "candidate not clean")
-          require(set(git("diff", "--name-only", "f717dbc2243c6c9ed967e4a806ca8247fa26aede", "HEAD").splitlines()) == {
-              ".github/scripts/prepare_ci_tools.py", ".github/workflows/ci.yml", ".github/workflows/docs.yml"
-          }, "unexpected production changes")
-          require(git("hash-object", str(helper)) == "d36fcd5977e153594b01c19d460917eedd14f680", "helper differs from review")
-          root = Path(tempfile.mkdtemp(prefix="live-ci-tools-", dir=os.environ["RUNNER_TEMP"]))
-          faults = root / "faults"
-          faults.mkdir()
-          real_curl = shutil.which("curl")
-          real_uv = str(Path(os.environ["RUNNER_TEMP"]) / "ci-preflight-env/bin/uv")
-          require(real_curl is not None, "curl not available")
-          version = subprocess.check_output([real_uv, "--version"], text=True)
-          require(version.split()[:2] == ["uv", "0.10.7"], "wrong uv version")
-          ccache_url = "https://github.com/ccache/ccache/releases/download/v4.14/ccache-4.14-linux-x86_64-glibc.tar.xz"
-          python_url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260211/cpython-3.11.14%2B20260211-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
-          curl_wrapper = (
-              "#!/usr/bin/env python3\nimport os,sys\n"
-              "if sys.argv[-1] == " + repr(ccache_url) + ":\n"
-              "    print('curl: (22) The requested URL returned error: 504', file=sys.stderr)\n"
-              "    raise SystemExit(22)\n"
-              "os.execv(" + repr(real_curl) + ", [" + repr(real_curl) + ", *sys.argv[1:]])\n"
-          )
-          uv_wrapper = (
-              "#!/usr/bin/env python3\nimport os,sys\n"
-              "if sys.argv[1:] == ['venv', '--python', '3.11']:\n"
-              "    print(" + repr("error: Request failed after 3 retries\n  Caused by: Failed to download " + python_url + "\n  Caused by: HTTP status server error (504 Gateway Timeout)") + ", file=sys.stderr)\n"
-              "    raise SystemExit(2)\n"
-              "os.execv(" + repr(real_uv) + ", [" + repr(real_uv) + ", *sys.argv[1:]])\n"
-          )
-          for name, contents in (("curl", curl_wrapper), ("uv", uv_wrapper)):
-              path = faults / name
-              path.write_text(contents)
-              path.chmod(0o755)
-          env = dict(os.environ)
-          env["PATH"] = str(faults) + os.pathsep + str(Path(real_uv).parent) + os.pathsep + env["PATH"]
-          env["CCACHE_VERSION"] = "4.14"
-          for key in ("CCACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_CACHE_DIR"):
-              folder = root / key.lower()
-              folder.mkdir()
-              (folder / "preserve-marker").write_text("retain existing cache content\n")
-              env[key] = str(folder)
-          def invoke(command, cwd, environment):
-              result = subprocess.run(command, cwd=cwd, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-              print(result.stdout, end="", flush=True)
-              require(result.returncode == 0, "live helper execution failed")
-              return result.stdout
-          print("Controlled trigger: original URL 504 is injected; official API transfer, archive checks, extraction and execution remain real.", flush=True)
-          ccache_output = invoke([sys.executable, str(helper), "ccache"], repo, env)
-          require("Recovering the same ccache-4.14" in ccache_output, "ccache fallback not exercised")
-          ccache_version = subprocess.check_output(["/usr/local/bin/ccache", "--version"], text=True).splitlines()[0]
-          require(ccache_version == "ccache version 4.14", "ccache installed version mismatch")
-          fallback_case = root / "fallback-case"
-          fallback_case.mkdir()
-          python_output = invoke([sys.executable, str(helper), "python-venv"], fallback_case, env)
-          require("Recovering the same cpython-3.11.14+20260211" in python_output, "Python fallback not exercised")
-          clean_env = dict(env)
-          clean_env.pop("GH_TOKEN", None)
-          info_code = (
-              "import json,os,sys,ssl,lzma,sqlite3,venv; print(json.dumps({"
-              "'implementation':sys.implementation.name,'version':list(sys.version_info[:3]),"
-              "'base_prefix':os.path.realpath(sys.base_prefix),"
-              "'base_executable':os.path.realpath(sys._base_executable),"
-              "'imports':['ssl','lzma','sqlite3','venv']}))"
-          )
-          info = json.loads(invoke([str(fallback_case / ".venv/bin/python"), "-I", "-c", info_code], fallback_case, clean_env))
-          require(info["implementation"] == "cpython" and info["version"] == [3,11,14], "actual CPython version")
-          require(Path(info["base_prefix"]).is_dir(), "recovered installation was removed")
-          require(Path(info["base_executable"]).is_file(), "recovered executable was removed")
-          normal_case = root / "normal-case"
-          normal_case.mkdir()
-          normal_env = dict(clean_env)
-          normal_env["PATH"] = str(Path(info["base_executable"]).parent) + os.pathsep + str(Path(real_uv).parent) + os.pathsep + os.environ["PATH"]
-          normal_env["UV_PYTHON_DOWNLOADS"] = "never"
-          normal_output = invoke([sys.executable, str(helper), "python-venv"], normal_case, normal_env)
-          require("Recovering the same" not in normal_output, "normal uv path unexpectedly recovered")
-          normal_info = json.loads(invoke([str(normal_case / ".venv/bin/python"), "-I", "-c", info_code], normal_case, normal_env))
-          require(normal_info["version"] == [3,11,14], "normal path did not use installed Python")
-          for key in ("CCACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_CACHE_DIR"):
-              require((Path(env[key]) / "preserve-marker").read_text() == "retain existing cache content\n", "cache marker changed")
-          require(not git("status", "--porcelain"), "live probe changed candidate source")
-          receipt = {
-              "candidate": target, "tree": tree, "helper_blob": git("hash-object", str(helper)),
-              "uv_version": version.strip(), "ccache_version": ccache_version,
-              "cp_python_fallback": info, "cp_python_normal": normal_info,
-              "original_504_trigger": "controlled injection",
-              "api_downloads_hashes_extraction_and_execution": "real",
-              "cache_markers_preserved": True, "normal_uv_path_passed": True,
+          
+          assert git("rev-parse", "HEAD") == "e469f1b34a1244fcede58042f22f259a6d33b5f2"
+          assert git("rev-parse", "HEAD^{tree}") == "7021de6ef8feae35649c1d98a75dd64af6e19a3a"
+          expected = {
+              "tests/python/test_ci_ccache_download.py",
+              ".agents/notes/implemented/compatibility/2026-11-08-pinned-ci-tool-download-recovery.md",
           }
-          out = Path(os.environ["RUNNER_TEMP"]) / "ci-tool-live-result.json"
-          out.write_text(json.dumps(receipt, sort_keys=True))
-          print("CI_TOOLS_LIVE_RESULT_BEGIN")
-          print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
-          print("CI_TOOLS_LIVE_RESULT_END")
-          
-          PY
-      - name: Verify unchanged catalog and evidence gates
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          import subprocess
-          from pathlib import Path
-          repo = Path.cwd()
-          def run(*args):
-              subprocess.run(args, check=True)
-          python = str(Path(os.environ["RUNNER_TEMP"]) / "ci-preflight-env/bin/python")
-          run(python, "tools/check_libxc_native_catalog.py")
-          run(python, "tools/compact_evidence_publications.py", "--check")
-          evidence = Path(os.environ["RUNNER_TEMP"]) / "ci-recovery-evidence.json"
-          run(python, "tools/evidence.py", "check-change", "--base", "1eeb9a20e7d4350f2dbbeaa736f59144def5348b", "--output", str(evidence))
-          run("git", "diff", "--check")
-          if subprocess.check_output(["git", "status", "--porcelain"], text=True).strip():
-              raise RuntimeError("Preflight changed tracked source")
-          proof = json.loads((Path(os.environ["RUNNER_TEMP"]) / "ci-tool-live-result.json").read_text())
-          proof["evidence"] = json.loads(evidence.read_text())
-          proof["catalog"] = "original read-only checker passed; scientific source identities unchanged"
-          proof["publication_compaction"] = "passed"
-          print("CI_RECOVERY_PREFLIGHT_BEGIN")
-          print(json.dumps(proof, sort_keys=True, separators=(",", ":")))
-          print("CI_RECOVERY_PREFLIGHT_END")
-          
+          changed = set(git("diff", "--name-only", "4656b0f48ed349ca9a52dbccb292a04bc1b79665", "HEAD").splitlines())
+          assert changed == expected, changed
+          assert git("rev-parse", "HEAD:tests/python/test_ci_ccache_download.py") == "37ef7e8cf72d0384b48803e2cbd12f4e4122b885"
+          assert git("rev-parse", "HEAD:.agents/notes/implemented/compatibility/2026-11-08-pinned-ci-tool-download-recovery.md") == "c683649eaeefcfc8fdf5c05b2515cadd720cd83f"
+          for path in (".github/scripts/prepare_ci_tools.py", ".github/workflows/ci.yml", ".github/workflows/docs.yml"):
+              assert git("rev-parse", "HEAD:" + path) == git("rev-parse", "4656b0f48ed349ca9a52dbccb292a04bc1b79665:" + path)
+          def inventory(ref):
+              return [path for path in git("ls-tree", "-r", "--name-only", ref, "tests/python").splitlines() if path.endswith(".py")]
+          assert inventory("HEAD") == inventory("4656b0f48ed349ca9a52dbccb292a04bc1b79665")
+          assert sys.version_info[:3] == (3, 11, 14), sys.version
+          subprocess.run([sys.executable, "tools/check_libxc_native_catalog.py"], check=True)
+          subprocess.run([sys.executable, "tools/compact_evidence_publications.py", "--check"], check=True)
+          evidence_path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "ci-test-correction-evidence.json"
+          subprocess.run([sys.executable, "tools/evidence.py", "check-change", "--base", "1eeb9a20e7d4350f2dbbeaa736f59144def5348b", "--output", str(evidence_path)], check=True)
+          evidence = json.loads(evidence_path.read_text())
+          assert not evidence["errors"], evidence
+          assert evidence["changed_bytes"] == 381177
+          assert evidence["exempt_bytes"] == 0
+          junit = ET.parse(pathlib.Path(os.environ["RUNNER_TEMP"]) / "ci-download-contract.xml")
+          suites = list(junit.getroot().iter("testsuite"))
+          tests = sum(int(x.attrib.get("tests", 0)) for x in suites)
+          failures = sum(int(x.attrib.get("failures", 0)) + int(x.attrib.get("errors", 0)) + int(x.attrib.get("skipped", 0)) for x in suites)
+          assert tests == 21 and failures == 0, (tests, failures)
+          subprocess.run(["git", "diff", "--check"], check=True)
+          assert git("status", "--porcelain") == "", git("status", "--porcelain")
+          result = {
+              "candidate": "e469f1b34a1244fcede58042f22f259a6d33b5f2", "tree": "7021de6ef8feae35649c1d98a75dd64af6e19a3a",
+              "test_blob": "37ef7e8cf72d0384b48803e2cbd12f4e4122b885",
+              "note_blob": "c683649eaeefcfc8fdf5c05b2515cadd720cd83f",
+              "python": sys.version.split()[0], "pytest": __import__("pytest").__version__,
+              "workers": 4, "tests_passed": tests,
+              "production_helper_and_workflows": "unchanged",
+              "test_module_inventory": "unchanged",
+              "catalog": "original read-only checker passed",
+              "publication_compaction": "passed", "evidence": evidence,
+              "clean_checkout": True,
+          }
+          print("CI_TEST_CORRECTION_PREFLIGHT_BEGIN")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          print("CI_TEST_CORRECTION_PREFLIGHT_END")
           PY
