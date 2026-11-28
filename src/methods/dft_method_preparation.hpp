@@ -70,6 +70,10 @@ scf::ScfOptions dft_options(const generativeqc_method_descriptor& descriptor,
                             generativeqc_backend backend, NativeKsExecutionPlan& plan);
 dft::GridSpec ks_grid_options(const generativeqc_method_descriptor& descriptor,
                               scf::ScfOptions& options, const NativeKsExecutionPlan& plan);
+/** Pageable envelope for the same provider selected by Direct CUDA preparation. */
+std::size_t cuda_ks_direct_energy_fock_host_capacity(const core::System& system,
+                                                     const scf::ScfOptions& options,
+                                                     const NativeKsExecutionPlan& plan);
 void validate_ks_spin_state(const NativeKsExecutionPlan& plan, const core::System& system,
                             generativeqc_backend backend);
 

@@ -7,9 +7,11 @@
 #include "api/device_resources.hpp"
 #include "api/error.hpp"
 #include "api/handles.hpp"
+#include "api/host_resources.hpp"
 #include "api/initial_guess_diagnostic.hpp"
 #include "api/ks_batch_capabilities.hpp"
 #include "api/ks_cpu_df_host_budget.hpp"
+#include "api/ks_cuda_host_budget.hpp"
 #include "api/ks_diagnostic.hpp"
 #include "api/ks_dispersion.hpp"
 #include "api/named_ks_inputs.hpp"
@@ -126,6 +128,10 @@ generativeqc_status generativeqc_ks_batch_supported_properties_v1(
   std::lock_guard<std::recursive_mutex> lock(batch->context->mutex);
   const auto value = batch->plan->supported_properties(index);
   if (!value) return GENERATIVEQC_STATUS_NOT_IMPLEMENTED;
+  if (batch->cuda_ks_host_energy_only) {
+    *output = *value & GENERATIVEQC_PROPERTY_ENERGY;
+    return GENERATIVEQC_STATUS_SUCCESS;
+  }
   const auto admitted = batch->cpu_hessian_host_properties ? batch->cpu_hessian_host_properties
                                                            : batch->cpu_df_host_properties;
   *output = admitted ? *value & admitted : *value;
@@ -148,13 +154,19 @@ struct HostHessianAdmission {
   bool saddle_ecp_forces{};
 };
 
+struct CudaKsHostAdmission {
+  const generativeqc_host_resources& resources;
+  std::uint64_t limit;
+};
+
 static generativeqc_status prepare_batch(
     generativeqc_context* context, const generativeqc_system* const* systems, uint32_t system_count,
     const generativeqc_method_descriptor* descriptor, generativeqc_batch_flags flags,
     const std::shared_ptr<generativeqc::runtime::DeviceResourceLedger>& resource_owner,
     generativeqc_batch** batch, const generativeqc_named_ks_descriptor* named,
     const generativeqc::scf::RksColdFockDamping* cold_damping = nullptr,
-    const HostHessianAdmission* hessian_admission = nullptr) {
+    const HostHessianAdmission* hessian_admission = nullptr,
+    const CudaKsHostAdmission* cuda_host = nullptr) {
   generativeqc::runtime::host_trace::Region trace("batch_prepare");
   if (context == nullptr || systems == nullptr || system_count == 0 || descriptor == nullptr ||
       batch == nullptr) {
@@ -178,6 +190,18 @@ static generativeqc_status prepare_batch(
     generativeqc::runtime::DeviceResourceScope resources(resource_owner);
     std::optional<generativeqc::api::NamedKsInputs> named_inputs;
     std::optional<generativeqc::api::CpuKsHostAdmission> cpu_host_admission;
+    std::optional<generativeqc::api::CudaKsHostInventory> cuda_host_inventory;
+    if (cuda_host) {
+      const auto* capabilities = generativeqc::methods::find_capabilities(descriptor->method);
+      if (!resource_owner ||
+          resource_owner->admission !=
+              generativeqc::runtime::DeviceResourceAdmission::SelectedInventory ||
+          !capabilities || capabilities->family != GENERATIVEQC_METHOD_FAMILY_DENSITY_FUNCTIONAL)
+        throw generativeqc::methods::MethodError(
+            GENERATIVEQC_STATUS_NOT_IMPLEMENTED,
+            "CUDA KS shared host resources require a selected device inventory");
+      cuda_host_inventory.emplace(*descriptor);
+    }
     if (named) {
       named_inputs.emplace(*descriptor, named, context->state.executed_backend);
       descriptor = &named_inputs->method.base;
@@ -211,6 +235,8 @@ static generativeqc_status prepare_batch(
       if (cpu_host_admission)
         cpu_host_admission->append(
             systems[i]->data, generativeqc::api::native_auxiliary_basis(*descriptor), cold_damping);
+      else if (cuda_host_inventory)
+        cuda_host_inventory->append(systems[i]->data);
       else
         native_systems.push_back(systems[i]->data);
       atom_counts.push_back(static_cast<std::uint32_t>(systems[i]->data.atoms.size()));
@@ -220,12 +246,29 @@ static generativeqc_status prepare_batch(
       if (hessian_admission && hessian_admission->derivative_ceiling)
         cpu_host_admission->select_derivative_workspace(hessian_admission->derivative_ceiling);
       host_lease = cpu_host_admission->reserve();
+    } else if (cuda_host_inventory) {
+      const auto [retained, workspace] = cuda_host_inventory->capacity();
+      if (retained > cuda_host->limit || workspace > cuda_host->limit - retained)
+        throw generativeqc::methods::MethodError(GENERATIVEQC_STATUS_OUT_OF_MEMORY,
+                                                 "CUDA KS fleet exceeds the local host limit");
+      const auto& ledger = cuda_host->resources.ledger;
+      host_workspace = ledger->use_workspace();
+      try {
+        host_lease =
+            std::make_shared<generativeqc::runtime::HostResourceLease>(ledger, retained, workspace);
+      } catch (const std::bad_alloc&) {
+        throw generativeqc::methods::MethodError(GENERATIVEQC_STATUS_OUT_OF_MEMORY,
+                                                 "CUDA KS shared host capacity exceeded");
+      }
+    }
+    if (cpu_host_admission || cuda_host_inventory) {
       for (std::uint32_t i = 0; i < system_count; ++i) native_systems.push_back(systems[i]->data);
     }
     auto candidate = std::make_unique<generativeqc_batch>();
     candidate->context = context;
     candidate->resource_ledger = resource_owner;
     candidate->host_lease = host_lease;
+    candidate->cuda_ks_host_energy_only = cuda_host != nullptr;
     if (hessian_admission) {
       candidate->cpu_hessian_workspace_bytes = cpu_host_admission->derivative_workspace();
       candidate->cpu_hessian_host_properties = cpu_host_admission->properties();
@@ -371,6 +414,21 @@ generativeqc_status generativeqc_batch_prepare_named_ks_with_device_resources_v1
   if (!name || !resources) return GENERATIVEQC_STATUS_INVALID_ARGUMENT;
   return prepare_batch(context, systems, system_count, descriptor, flags,
                        generativeqc::api::device_resource_owner(resources), batch, name);
+}
+
+/** Opt-in bridge for an energy fleet; the Python plan never supplies byte counts. */
+GENERATIVEQC_API generativeqc_status generativeqc_internal_ks_batch_prepare_with_host_device_v1(
+    generativeqc_context* context, const generativeqc_system* const* systems,
+    std::uint32_t system_count, const generativeqc_method_descriptor* descriptor,
+    generativeqc_batch_flags flags, const generativeqc_device_resources* device,
+    const generativeqc_host_resources* host, std::uint64_t host_limit, generativeqc_batch** batch) {
+  if (batch) *batch = nullptr;
+  if (!device || !host || !host->ledger || !host_limit) return GENERATIVEQC_STATUS_INVALID_ARGUMENT;
+  const auto& owner = generativeqc::api::device_resource_owner(device);
+  if (!owner) return GENERATIVEQC_STATUS_INVALID_ARGUMENT;
+  const CudaKsHostAdmission admission{*host, host_limit};
+  return prepare_batch(context, systems, system_count, descriptor, flags, owner, batch, nullptr,
+                       nullptr, nullptr, &admission);
 }
 
 generativeqc_status generativeqc_batch_get_device_resources(
@@ -989,6 +1047,11 @@ static generativeqc_status execute_batch(generativeqc_batch* batch,
     const bool compute_forces = std::any_of(results, results + result_count, [](const auto& item) {
       return item.forces != nullptr || item.force_count != 0;
     });
+    if (batch->cuda_ks_host_energy_only &&
+        (compute_forces || execution == BatchExecution::DenseHessianReference)) {
+      batch->context->last_detail = "derivative replay is outside the admitted CUDA KS host budget";
+      return GENERATIVEQC_STATUS_NOT_IMPLEMENTED;
+    }
     std::optional<generativeqc::dft::CudaKsHessianReferenceScope> hessian_reference;
     if (execution == BatchExecution::DenseHessianReference) {
       const auto& lifecycle = batch->plan->execution_lifecycle();

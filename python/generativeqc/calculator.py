@@ -3260,6 +3260,26 @@ class Calculator:
                 or self._cuda_split_hybrid_stationary is not None
                 or self._cuda_direct_hybrid_energy_plan
                 or self._cuda_pbe_range_stationary
+                or (
+                    properties is not None
+                    and requested == {"energy"}
+                    and self._device_name == "cuda"
+                    and self._method
+                    in (
+                        _native.METHOD_LDA_RKS,
+                        _native.METHOD_LDA_UKS,
+                        _native.METHOD_PBE_RKS,
+                        _native.METHOD_PBE_UKS,
+                    )
+                    and self._density_fitting_mode == _native.DENSITY_FITTING_NONE
+                    and self._precision_mode == _native.PRECISION_FP64
+                    and self._initial_guess is None
+                    and options.xc_schedule == "device_fused"
+                    and hasattr(
+                        self._library,
+                        "generativeqc_internal_ks_batch_prepare_with_host_device_v1",
+                    )
+                )
             )
             output_aware = (
                 self._cpu_packed_eri_maximum_bytes
@@ -3632,6 +3652,9 @@ class Calculator:
         With ``host_resources``, ``host_hessian_workspace_bytes`` reserves one
         shared derivative workspace for a linked Direct CPU KS fleet. This
         mode admits energy replay and Hessian-vector products, not forces.
+        A Direct CUDA LDA/PBE energy resource plan with ``initial_guess=None``
+        can instead share its host capacity across prepared fleets; it does not
+        admit derivatives.
         See :ref:`python-batch-errors` and :ref:`python-batch-ownership`."""
 
         if getattr(self, "_provider_initialization_intent", None) is not None:

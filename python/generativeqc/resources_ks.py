@@ -860,6 +860,27 @@ def _native_radial_fock_inventory(
     return _CudaFockCapacity(retained, setup, late, host), modes[policy]
 
 
+def _native_direct_host_fock(library: typing.Any, item: typing.Any) -> int:
+    """Quote the Direct provider admitted by the selected-inventory device ledger."""
+    query = library.generativeqc_resource_ks_cuda_direct_host_fock_v1
+    query.argtypes = [ctypes.c_size_t] * 5 + [ctypes.POINTER(ctypes.c_uint64)]
+    query.restype = ctypes.c_int
+    orbital = item["orbital"]
+    output = ctypes.c_uint64()
+    if query(
+        item["atoms"],
+        orbital["shells"],
+        orbital["primitives"],
+        orbital["nbf"],
+        orbital["cartesian_nbf"],
+        ctypes.byref(output),
+    ):
+        raise NotImplementedError(
+            "native Direct CUDA Fock host inventory rejected the source"
+        )
+    return checked_bytes(output.value)
+
+
 def _native_cuda_fleet_inventory(
     library: typing.Any,
     items: typing.Sequence[typing.Any],
@@ -2015,6 +2036,18 @@ def ks_resource_request(
                 )
             )
             fock = None
+            direct_semilocal_energy = (
+                _cuda_energy_only
+                and not include_forces
+                and _fitted is None
+                and method in ("lda-rks", "lda-uks", "pbe-rks", "pbe-uks")
+                and precision == "fp64"
+                and model.xc_schedule == "device_fused"
+                and not has_ecp
+                and hasattr(
+                    library, "generativeqc_resource_ks_cuda_direct_host_fock_v1"
+                )
+            )
             radial_fock = (
                 wb97mv
                 or range_pbe
@@ -2057,6 +2090,24 @@ def ks_resource_request(
                         if radial_fock
                         else "all KS fitted Fock host envelopes",
                         checked_bytes(sum(owner.host for owner in fock)),
+                        "pageable",
+                        first_phase,
+                        last_phase,
+                        kind="persistent",
+                    )
+                )
+            elif direct_semilocal_energy:
+                # Use the same native pageable envelope as the prepared owner.
+                # Leave the established semilocal device inventory unchanged.
+                estimates.append(
+                    ResourceEstimate(
+                        "all KS Direct Fock host envelopes",
+                        checked_bytes(
+                            sum(
+                                _native_direct_host_fock(library, item)
+                                for item in items
+                            )
+                        ),
                         "pageable",
                         first_phase,
                         last_phase,

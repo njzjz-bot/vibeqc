@@ -57,6 +57,14 @@ The same reservation is available to C and C++ single-system and fleet
 preparation through the named KS descriptor. Checkpoint/export or other
 operations outside the energy/force plan have no capacity guarantee from it.
 
+The Python batch interface also accepts a shared `HostResources` pool for
+all-electron Direct FP64 CUDA LDA/PBE RKS and UKS with through-d shells,
+device-fused XC and `initial_guess=None`. Use an explicit
+`properties=("energy",)` resource plan and pass it to `prepare_batch` with
+the pool. The native owner checks host capacity before copying batch topology
+or creating device providers. A pooled batch defaults to energy-only replay;
+the lease does not admit forces, Hessians, fitted Fock, or corrections.
+
 An omitted functional resolves to `LDA_X+LDA_C_PW` or
 `GGA_X_PBE+GGA_C_PBE`, with unit coefficients. RKS resolves an unpolarized
 composition; UKS resolves a polarized one. An explicit `FunctionalSpec` must

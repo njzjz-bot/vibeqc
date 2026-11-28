@@ -109,6 +109,7 @@ struct generativeqc_calculation {
 
 struct generativeqc_batch {
   generativeqc_context* context{};
+  bool cuda_ks_host_energy_only{};
   generativeqc_property_flags cpu_df_host_properties{};
   generativeqc_property_flags cpu_hessian_host_properties{};
   std::size_t cpu_hessian_workspace_bytes{};

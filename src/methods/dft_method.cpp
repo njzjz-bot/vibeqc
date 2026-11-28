@@ -52,6 +52,7 @@
 #include "scf/fock_prepared.hpp"
 #include "scf/initial_guess/density.hpp"
 #include "scf/ks_device_resources.hpp"
+#include "scf/ks_direct_fock_host_capacity.hpp"
 #include "scf/mean_field.hpp"
 #include "scf/preliminary_guess.hpp"
 #include "scf/reference/mean_field.hpp"
@@ -4084,6 +4085,18 @@ class KsPreparedBatch final : public PreparedBatch,
 
 Result adapt_dft_result(scf::ScfResult native, generativeqc_backend backend) {
   return adapt_result(std::move(native), backend);
+}
+
+std::size_t cuda_ks_direct_energy_fock_host_capacity(const core::System& system,
+                                                     const scf::ScfOptions& options,
+                                                     const NativeKsExecutionPlan& plan) {
+  constexpr auto backend = GENERATIVEQC_BACKEND_CUDA;
+  const auto orbital = scf::df_source_capacity::shape(system);
+  const auto device = ks_provider_bytes(
+      system, backend, ks_direct_derivative_order(*options.resolved_fock_build, backend, plan));
+  const auto one_electron = scf::cuda_ks_one_electron_capacity(orbital.cartesian_aos, orbital.atoms,
+                                                               orbital.shells, orbital.primitives);
+  return scf::cuda_ks_direct_fock_host_capacity(orbital, device, one_electron);
 }
 
 bool dft_cuda_stationary_model_available(const generativeqc_method_descriptor& descriptor) {

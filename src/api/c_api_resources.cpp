@@ -34,6 +34,7 @@
 #include "scf/hf_host_resources.hpp"
 #include "scf/initial_guess/huckel_capacity.hpp"
 #include "scf/ks_device_resources.hpp"
+#include "scf/ks_direct_fock_host_capacity.hpp"
 #include "scf/ks_host_resources.hpp"
 #include "scf/preliminary_guess.hpp"
 
@@ -650,7 +651,6 @@ generativeqc_status generativeqc_resource_ks_cuda_radial_fock_v1(const std::uint
 #if GENERATIVEQC_HAS_CUDA
   using namespace generativeqc;
   using namespace methods::detail;
-  using scf::cuda_ks_capacity::product;
   using scf::cuda_ks_capacity::sum;
   using Capacity = std::array<std::uint64_t, 4>;
   try {
@@ -701,12 +701,8 @@ generativeqc_status generativeqc_resource_ks_cuda_radial_fock_v1(const std::uint
     const auto exact = [&]() {
       const auto device = scf::cuda_direct_coulomb_device_bytes(
           1, orbital.public_aos, orbital.atoms, orbital.shells, orbital.primitives, 1, true);
-      // Bound setup and retained packing, including the optional direct J
-      // source and Cartesian/public one-electron copies of this Fock owner.
-      const auto pairs = product(orbital.shells, sum({orbital.shells, 1})) / 2;
       const auto host =
-          sum({product(4, device), product(4, orbital.system_bytes),
-               product(2048, sum({1, pairs, product(pairs, pairs)})), bare_one_electron, ecp_host});
+          scf::cuda_ks_direct_fock_host_capacity(orbital, device, bare_one_electron, ecp_host);
       return std::array<std::uint64_t, 3>{device, std::max<std::uint64_t>(device, one_electron),
                                           host};
     };
@@ -743,6 +739,31 @@ generativeqc_status generativeqc_resource_ks_cuda_radial_fock_v1(const std::uint
   }
 #else
   return GENERATIVEQC_STATUS_NOT_IMPLEMENTED;
+#endif
+}
+
+/** Shape-only pageable envelope for selected-inventory Direct LDA/PBE.
+ * Unlike the radial inventory, this contract cannot opt into MD-J. */
+GENERATIVEQC_API int generativeqc_resource_ks_cuda_direct_host_fock_v1(
+    std::size_t atoms, std::size_t shells, std::size_t primitives, std::size_t aos,
+    std::size_t cartesian_aos, std::uint64_t* output) {
+  if (!output) return -1;
+#if GENERATIVEQC_HAS_CUDA
+  try {
+    using namespace generativeqc;
+    const auto orbital =
+        scf::df_source_capacity::shape(atoms, shells, primitives, aos, cartesian_aos);
+    const auto device =
+        scf::cuda_direct_coulomb_device_bytes(1, aos, atoms, shells, primitives, 1, false);
+    const auto one_electron =
+        scf::cuda_ks_one_electron_capacity(cartesian_aos, atoms, shells, primitives);
+    *output = scf::cuda_ks_direct_fock_host_capacity(orbital, device, one_electron);
+    return 0;
+  } catch (...) {
+    return -1;
+  }
+#else
+  return -1;
 #endif
 }
 

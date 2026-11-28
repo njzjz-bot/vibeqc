@@ -99,6 +99,10 @@ extern "C" generativeqc_status generativeqc_ks_hessian_cuda_v2(
       !generativeqc::api::valid_descriptor(receipt))
     return GENERATIVEQC_STATUS_ABI_MISMATCH;
   batch->context->last_detail.clear();
+  if (batch->cuda_ks_host_energy_only) {
+    batch->context->last_detail = "Hessian replay is outside the admitted CUDA KS host budget";
+    return GENERATIVEQC_STATUS_NOT_IMPLEMENTED;
+  }
   if (index >= batch->atom_counts.size() || !batch->atom_counts[index] ||
       batch->atom_counts[index] > std::numeric_limits<std::size_t>::max() / 3)
     return GENERATIVEQC_STATUS_INVALID_ARGUMENT;

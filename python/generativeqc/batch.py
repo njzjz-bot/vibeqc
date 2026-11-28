@@ -243,8 +243,8 @@ class PreparedBatch:
         Charges and multiplicities default to zero and one per system. Explicit
         sequences must match the nonempty batch; an optional resource plan must
         match the requested systems, method, and calculator budget. A shared
-        host cap additionally requires a supported CPU DF resource plan or
-        explicit linked Direct CPU Hessian workspace.
+        host cap additionally requires a supported CPU DF plan, an explicit
+        linked Direct CPU Hessian workspace, or a Direct CUDA LDA/PBE energy plan.
         """
         if not systems:
             raise ValueError("a batch requires at least one system")
@@ -335,6 +335,7 @@ class PreparedBatch:
         self._dense_force_plan = False
         self._cpu_df_plan = False
         self._cpu_df_force_plan = False
+        self._cuda_ks_host_plan = False
         from ._cpu_force_resources import qualified_direct_semilocal_context
 
         self._output_aware_cpu_forces = qualified_direct_semilocal_context(calculator)
@@ -513,11 +514,20 @@ class PreparedBatch:
                 self.resource_plan.budget.limits().get("host", MAX_BYTES),
                 host_hessian_workspace_bytes,
             )
+        self._cuda_ks_host_plan = (
+            host_resources is not None
+            and self._resource_ledger is not None
+            and request.name == "ks"
+            and frozenset(request.identity.observables) == {"energy"}
+            and dispersion_request is None
+            and _hessian_request is None
+            and _cold_rks_fock is None
+        )
         if host_resources is not None and not (
-            self._cpu_df_plan or host_hessian_budget
+            self._cpu_df_plan or host_hessian_budget or self._cuda_ks_host_plan
         ):
             raise NotImplementedError(
-                "shared host resources require a native CPU DF KS plan or a Direct Hessian workspace"
+                "shared host resources require a supported CPU KS or Direct CUDA KS energy plan"
             )
         self._model_signature = calculator._model_signature()
         fixed_cuda_d4 = (
@@ -644,6 +654,47 @@ class PreparedBatch:
                 )
 
             def prepare() -> typing.Any:
+                if self._cuda_ks_host_plan:
+                    from generativeqc_compiler.common.resources import MAX_BYTES
+
+                    if native_name is not None:
+                        raise NotImplementedError(
+                            "shared CUDA KS host resources require a Direct LDA/PBE descriptor"
+                        )
+                    prepare_host = getattr(
+                        self._library,
+                        "generativeqc_internal_ks_batch_prepare_with_host_device_v1",
+                        None,
+                    )
+                    if prepare_host is None:
+                        raise NotImplementedError(
+                            "native shared CUDA KS host preparation is unavailable"
+                        )
+                    prepare_host.argtypes = [
+                        ctypes.c_void_p,
+                        ctypes.POINTER(ctypes.c_void_p),
+                        ctypes.c_uint32,
+                        ctypes.POINTER(_native.MethodDescriptor),
+                        ctypes.c_uint32,
+                        ctypes.c_void_p,
+                        ctypes.c_void_p,
+                        ctypes.c_uint64,
+                        ctypes.POINTER(ctypes.c_void_p),
+                    ]
+                    prepare_host.restype = ctypes.c_int
+                    limit = self.resource_plan.budget.limits().get("host", MAX_BYTES)
+                    with host_resources._borrow(self._library) as shared:
+                        return prepare_host(
+                            self._context,
+                            handle_array,
+                            count,
+                            ctypes.byref(method),
+                            flags,
+                            self._resource_ledger.handle,
+                            shared,
+                            limit,
+                            ctypes.byref(self._batch),
+                        )
                 if native_name is not None:
                     from ._named_ks import prepare_named_batch
 
@@ -755,7 +806,11 @@ class PreparedBatch:
                     self._library,
                     status,
                     self.resource_diagnostics,
-                    context=self._context if host_hessian_budget is not None else None,
+                    context=(
+                        self._context
+                        if host_hessian_budget is not None or self._cuda_ks_host_plan
+                        else None
+                    ),
                 )
                 from .resources_ks import configure_native_cuda_stationary_batch
 
@@ -1572,7 +1627,9 @@ class PreparedBatch:
         self._ensure_open()
         from .initial_guess import read_initial_guess_diagnostic
 
-        if properties is None and self._host_hessian_workspace_bytes is not None:
+        if properties is None and (
+            self._host_hessian_workspace_bytes is not None or self._cuda_ks_host_plan
+        ):
             properties = ("energy",)
         if (
             properties is None
@@ -1606,6 +1663,10 @@ class PreparedBatch:
             raise ValueError(f"unsupported properties: {names}")
         unsupported = requested - self._calculator._capabilities.supported_properties
         compute_forces = "forces" in requested
+        if compute_forces and self._cuda_ks_host_plan:
+            raise NotImplementedError(
+                "force replay is outside the admitted CUDA KS host budget"
+            )
         if compute_forces and self._host_hessian_workspace_bytes is not None:
             raise NotImplementedError(
                 "force replay is outside the admitted CPU Hessian host budget"

@@ -322,6 +322,11 @@ generativeqc_status generativeqc_ks_snapshot_create_v1(generativeqc_batch* batch
   if (!batch || !output || !metadata || metadata_count != 16)
     return GENERATIVEQC_STATUS_INVALID_ARGUMENT;
   std::lock_guard<std::recursive_mutex> lock(batch->context->mutex);
+  if (batch->cuda_ks_host_energy_only) {
+    batch->context->last_detail =
+        "derivative snapshots are outside the admitted CUDA KS host budget";
+    return GENERATIVEQC_STATUS_NOT_IMPLEMENTED;
+  }
   try {
     auto result = std::make_unique<generativeqc_ks_snapshot>();
     result->index = index;
