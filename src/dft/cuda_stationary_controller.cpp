@@ -455,10 +455,9 @@ generativeqc_status CudaStationaryController::gradient(
                                            model.nonlocal_c, model.nonlocal_coefficient};
       const auto* selected = std::getenv("GENERATIVEQC_VV10_PAIR_SCHEDULE");
       const std::string schedule = selected ? selected : "";
-      const bool reuse_admitted = parameters.variant == nlc::Vv10Variant::vv10 &&
-                                  nonlocal_reuse_selected(points) &&
-                                  points <= (std::uint64_t{1} << 32) &&
-                                  model.nonlocal_coefficient <= 0x1p32;
+      const bool reuse_admitted =
+          parameters.variant == nlc::Vv10Variant::vv10 && nonlocal_reuse_selected(points) &&
+          points <= (std::uint64_t{1} << 32) && model.nonlocal_coefficient <= 0x1p32;
       const int* mismatch = nullptr;
       pair.comparison_issued = false;
       if (reuse_admitted && pair.reuse_ready && schedule == pair.reuse_schedule) {
