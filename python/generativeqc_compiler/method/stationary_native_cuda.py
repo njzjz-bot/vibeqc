@@ -13,6 +13,7 @@ from fractions import Fraction
 from functools import cache
 from typing import TYPE_CHECKING
 
+from generativeqc_compiler.common.nonlocal_correlation import RVV10
 from generativeqc_compiler.common.paths import asset_path
 from generativeqc_compiler.common.provenance import canonical_hash, file_hash
 from generativeqc_compiler.dft._generated_native_semilocal import SEMILOCAL_FAMILIES
@@ -35,6 +36,7 @@ from .stationary_cuda import (
     COMPOSITE_STATIONARY_CUDA_EXTERNAL_SOURCES,
     QUALIFIED_PARTITION_ITERATIONS,
     QUALIFIED_STATIONARY_AOT_PROFILE_NAMES,
+    StationaryAotProfile,
     _qualified_aot_profile,
     emit_stationary_profile_aot_wrapper_cuda,
     emit_stationary_wrapper_cuda,
@@ -47,6 +49,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+NATIVE_RVV10_PROFILES = ("r2scan_rvv10_rks", "r2scan_rvv10_uks")
+
 NATIVE_STATIONARY_CUDA_PROFILES = (
     tuple(
         profile
@@ -55,7 +59,18 @@ NATIVE_STATIONARY_CUDA_PROFILES = (
         <= set(COMPOSITE_STATIONARY_CUDA_EXTERNAL_SOURCES)
     )
     + AUTOMATIC_STATIONARY_AOT_PROFILE_NAMES
+    + NATIVE_RVV10_PROFILES
 )
+
+
+def _native_profile(profile: str) -> StationaryAotProfile:
+    """Resolve the revised nonlocal graph without changing the ordinary XC profile."""
+    if profile in NATIVE_RVV10_PROFILES:
+        base = _qualified_aot_profile(profile.replace("_rvv10", ""))
+        return StationaryAotProfile(
+            "r2scan_rvv10", base.functional, "R2SCAN+RVV10", base.spin
+        )
+    return _qualified_aot_profile(profile)
 
 
 def native_stationary_model(profile: str) -> tuple[int, int, Fraction, Fraction]:
@@ -65,7 +80,7 @@ def native_stationary_model(profile: str) -> tuple[int, int, Fraction, Fraction]
     point programs require their exact component graph; scalable programs carry
     the actual outer X/C weights, including nonstandard hybrid compositions.
     """
-    plan = compile_ks_execution_plan(_qualified_aot_profile(profile).plan.method)
+    plan = compile_ks_execution_plan(_native_profile(profile).plan.method)
     functional = plan.semilocal.functional
     actual = dict(functional.components)
     if profile.startswith("libxc_"):
@@ -156,7 +171,9 @@ def emit_native_stationary_profile_cuda(
     """
     if profile not in NATIVE_STATIONARY_CUDA_PROFILES:
         raise ValueError(f"unsupported native stationary CUDA profile: {profile}")
-    selected = _qualified_aot_profile(profile)
+    selected = _native_profile(profile)
+    revised_nonlocal = profile in NATIVE_RVV10_PROFILES
+    variational_r2scan = variational_r2scan or revised_nonlocal
     record = next(
         (
             record
@@ -208,11 +225,12 @@ def emit_native_stationary_profile_cuda(
             functional=selected.functional,
             plan=plan,
             include_reduction=False,
-            staged_point=True,
+            staged_point=staged_point,
             source_cache=source_cache,
             include_external=True,
+            variational_r2scan=variational_r2scan,
         )
-        if staged_point
+        if staged_point or revised_nonlocal
         else emit_stationary_profile_aot_wrapper_cuda(
             profile,
             include_reduction=False,
@@ -246,7 +264,11 @@ def emit_native_stationary_profile_cuda(
         )
         for suffix in ("", "_fp32")
     )
-    profile_name = f"{profile}_variational" if variational else (shared or profile)
+    profile_name = (
+        f"{profile}_variational"
+        if variational and not revised_nonlocal
+        else (shared or profile)
+    )
     prefix = f"generativeqc_native_{profile_name}_"
     source_identity = canonical_hash(
         {
@@ -254,6 +276,8 @@ def emit_native_stationary_profile_cuda(
             "contract": (
                 native_stationary_shared_contract(profile)
                 if shared
+                else {"variational_rvv10": True, "source_plan": plan.identity}
+                if revised_nonlocal
                 else stationary_aot_profile_contract_identity(profile)
             ),
             "wrapper": wrapper,
@@ -319,7 +343,11 @@ def emit_native_stationary_profile_cuda(
     ):
         raise ValueError("native stationary range graph requires matched SR/LR")
     nlc = execution.nonlocal_correlation
-    if bool(ranged) != bool(nlc):
+    if revised_nonlocal and (
+        nlc is None or nlc.spec.variant != RVV10 or ranged or plan.exchange is not None
+    ):
+        raise ValueError("native r2SCAN+rVV10 requires rVV10 without exact exchange")
+    if not revised_nonlocal and bool(ranged) != bool(nlc):
         raise ValueError(
             "native stationary composite requires complete range/VV10 providers"
         )
@@ -369,7 +397,7 @@ const CudaStationaryBinding& native_stationary_profile_{profile_name}() {{
       native_source_span, native_metrics, native_destroy,
       {{{functional}U, {domain_literal}, {plan.spin_blocks}U, {QUALIFIED_PARTITION_ITERATIONS}U,
        {exact_cuda_literal(exchange_scale)}, {exact_cuda_literal(correlation_scale)},
-       {exchange}, {range_values}}},
+       {exchange}, {range_values}, nlc::Vv10Variant::{"rvv10" if revised_nonlocal else "vv10"}}},
       stationary_fp32_point_capable ? native_geometry<true> : nullptr, native_grid_topology,
       native_nonlocal_slot >= 0 ? native_nonlocal_geometry : nullptr,
       {json.dumps(source_identity)}, nullptr,

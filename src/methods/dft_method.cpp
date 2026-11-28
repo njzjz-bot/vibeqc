@@ -416,10 +416,18 @@ const dft::CudaStationaryBinding* native_cuda_stationary_binding(
   const auto exact = options.density_fitting_mode == GENERATIVEQC_DENSITY_FITTING_NONE;
   const auto functional = ks_xc_functional_code(execution_plan);
   auto work_domain = ks_scf_domain_version(execution_plan);
+  const bool revised_nonlocal =
+      all_electron && execution_plan.nonlocal_correlation && !execution_plan.range_exchange &&
+      dft::r2scan_rvv10_model_matches(
+          execution_plan.semilocal_family, execution_plan.nonlocal_parameters,
+          options.semilocal_exchange_scale, options.semilocal_correlation_scale,
+          execution_plan.full_range_exchange != 0);
   const bool r2scan_variational =
       functional == dft::semilocal_family_code(dft::SemilocalFamily::R2scan) &&
       options.resolved_fock_build && !options.resolved_fock_build->spec.exchange.present &&
-      !composite && dft::use_cuda_r2scan_variational(options, grid, maximum_angular);
+      (!composite || revised_nonlocal) &&
+      dft::use_cuda_r2scan_variational(options, grid, maximum_angular);
+  if (revised_nonlocal && !r2scan_variational) return {};
   if (r2scan_variational) work_domain = dft::kCudaR2scanVariationalDomain;
 #if GENERATIVEQC_HAS_CUDA
   if (!composite && options.resolved_fock_build &&
@@ -440,7 +448,8 @@ const dft::CudaStationaryBinding* native_cuda_stationary_binding(
       options.resolved_fock_build->backend != scf::FockBackend::Cuda)
     return {};
   if (composite &&
-      (!execution_plan.range_exchange || !execution_plan.nonlocal_correlation ||
+      ((!execution_plan.range_exchange && !revised_nonlocal) ||
+       !execution_plan.nonlocal_correlation ||
        options.precision_mode != GENERATIVEQC_PRECISION_FP64 ||
        options.xc_execution_schedule != scf::ScfOptions::XcExecutionSchedule::DeviceFused ||
        (options.nonlocal_grid_spec && options.nonlocal_grid_spec->partition_iterations != 3)))
@@ -475,7 +484,8 @@ const dft::CudaStationaryBinding* native_cuda_stationary_binding(
       composite ? execution_plan.range_omega : 0.0,
       composite ? execution_plan.nonlocal_parameters.b : 0.0,
       composite ? execution_plan.nonlocal_parameters.c : 0.0,
-      composite ? execution_plan.nonlocal_parameters.coefficient : 0.0};
+      composite ? execution_plan.nonlocal_parameters.coefficient : 0.0,
+      composite ? execution_plan.nonlocal_parameters.variant : dft::nlc::Vv10Variant::vv10};
   if (composite && exchange != execution_plan.short_range_exchange) return {};
   const auto* binding = dft::cuda_stationary_binding(model);
   if (application &&

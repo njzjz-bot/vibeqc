@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "dft/generated_semilocal_compositions.hpp"
+#include "dft/nonlocal_correlation/vv10_parameters.hpp"
 #include "scf/cuda_derivative_sources.hpp"
 
 namespace generativeqc_grid_pair_geometry {
@@ -24,6 +25,7 @@ struct CudaStationaryModel {
   double semilocal_exchange_scale{}, semilocal_correlation_scale{}, full_range_exchange{};
   double short_range_exchange{}, long_range_exchange{}, range_omega{};
   double nonlocal_b{}, nonlocal_c{}, nonlocal_coefficient{};
+  nlc::Vv10Variant nonlocal_variant{nlc::Vv10Variant::vv10};
   bool operator==(const CudaStationaryModel&) const = default;
 };
 

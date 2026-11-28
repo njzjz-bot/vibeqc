@@ -368,12 +368,14 @@ generativeqc_status CudaStationaryController::gradient(
         (spec.exchange.present && spec.exchange.coefficient != expected_exchange) ||
         (spec.spin == scf::FockSpin::Restricted ? 1U : 2U) != density.spins)
       throw std::invalid_argument("native stationary profile disagrees with prepared Fock model");
-    if (composite &&
-        (!range || !nonlocal_ || !nonlocal || !*nonlocal || nonlocal->device_id != device_ ||
+    if (binding_->model.nonlocal_b != 0 &&
+        (!nonlocal_ || !nonlocal || !*nonlocal || nonlocal->device_id != device_ ||
          nonlocal->owner != density.owner || nonlocal->solve_epoch != density.solve_epoch ||
          nonlocal->generation != density.generation ||
-         nonlocal->point_count != nonlocal_->quadrature.point_count ||
-         range->spec.exchange.omega != binding_->model.range_omega ||
+         nonlocal->point_count != nonlocal_->quadrature.point_count))
+      throw std::invalid_argument("native nonlocal final-state lease mismatch");
+    if (composite &&
+        (!range || range->spec.exchange.omega != binding_->model.range_omega ||
          range->spec.exchange.coefficient !=
              (density.spins == 1 ? -0.5 : -1.0) *
                  (binding_->model.long_range_exchange - binding_->model.short_range_exchange)))
@@ -449,11 +451,12 @@ generativeqc_status CudaStationaryController::gradient(
           nonlocal->gradient, effective, effective + points, effective + 2 * points,
           pair.errors.get() + 1);
       const auto& model = binding_->model;
-      const nlc::Vv10Parameters parameters{nlc::Vv10Variant::vv10, model.nonlocal_b,
+      const nlc::Vv10Parameters parameters{model.nonlocal_variant, model.nonlocal_b,
                                            model.nonlocal_c, model.nonlocal_coefficient};
       const auto* selected = std::getenv("GENERATIVEQC_VV10_PAIR_SCHEDULE");
       const std::string schedule = selected ? selected : "";
-      const bool reuse_admitted = nonlocal_reuse_selected(points) &&
+      const bool reuse_admitted = parameters.variant == nlc::Vv10Variant::vv10 &&
+                                  nonlocal_reuse_selected(points) &&
                                   points <= (std::uint64_t{1} << 32) &&
                                   model.nonlocal_coefficient <= 0x1p32;
       const int* mismatch = nullptr;

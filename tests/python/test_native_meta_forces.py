@@ -23,6 +23,133 @@ def require_device(device: str) -> None:
         assert os.environ.get("SLURM_JOB_ID"), "GPU qualification must run through srun"
 
 
+def _rvv10_product_grid(centers: np.ndarray, spec: GridSpec) -> dict[str, list]:
+    """Build a product grid and its independent moving Becke partition."""
+    from test_native_grid_geometry import _partition
+
+    radial, radial_weights = np.polynomial.legendre.leggauss(spec.radial_points)
+    polar, polar_weights = np.polynomial.legendre.leggauss(spec.angular_polar)
+    parameter = (1 + radial) / 2
+    azimuth = np.arange(spec.angular_azimuth) * (2 * np.pi / spec.angular_azimuth)
+    heights, angles = np.meshgrid(polar, azimuth, indexing="ij")
+    rings = np.sqrt(1 - heights**2)
+    directions = np.stack(
+        (rings * np.cos(angles), rings * np.sin(angles), heights), axis=-1
+    )
+    relative = (parameter / (1 - parameter))[:, None, None, None] * directions
+    relative = relative.reshape(-1, 3)
+    radial_measures = radial_weights * parameter**2 / (2 * (1 - parameter) ** 4)
+    angular_measures = np.repeat(polar_weights * 2 * np.pi / len(azimuth), len(azimuth))
+    atomic = np.tile(
+        np.multiply.outer(radial_measures, angular_measures).ravel(), len(centers)
+    )
+    points = (centers[:, None, :] + relative).reshape(-1, 3)
+    partition = _partition(
+        {
+            "centers": centers,
+            "points": points,
+            "owner": np.repeat(np.arange(len(centers)), len(relative)),
+            "left": np.zeros_like(centers),
+            "right": np.zeros_like(centers),
+            "atomic": atomic,
+            "iterations": 3,
+        }
+    )
+    return {
+        "points": points.ravel().tolist(),
+        "atomic": atomic.tolist(),
+        "weights": list(partition),
+    }
+
+
+@pytest.mark.parametrize("fitted", (False, True), ids=("direct", "df-j"))
+@pytest.mark.parametrize("spins", (1, 2), ids=("rks", "uks"))
+def test_cuda_rvv10_native_force_replay_and_oracle(
+    fitted: bool, spins: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Differentiate the independent reconverged total energy at the moved frame."""
+    require_device("cuda")
+    pytest.importorskip("pyscf")
+    from generativeqc import batch as batch_module
+    from test_native_wb97mv_stationary import MolecularEnergy
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("rVV10 force escaped the prepared native owner")
+
+    monkeypatch.setattr(batch_module.PreparedBatch, "_public_dft_cuda_force", forbidden)
+    monkeypatch.setenv("GENERATIVEQC_VV10_COMPONENT_REUSE", "1")
+    atoms = [*ATOMS] if spins == 1 else [*ATOMS, ("H", (1.4, 0.1, -0.2))]
+    centers = np.asarray([position for _, position in atoms])
+    secondary = GridSpec(6, 3, 6) if spins == 2 else None
+    calculator = Calculator(
+        method="r2scan+rvv10-rks" if spins == 1 else "r2scan+rvv10-uks",
+        basis="sto-3g",
+        basis_representation="spherical",
+        device="cuda",
+        initial_guess=None,
+        density_fitting="cuda" if fitted else "none",
+        ks_options=KsOptions(grid=PRIMARY, nonlocal_grid=secondary, tile_points=64),
+        energy_tolerance=1e-13,
+        density_tolerance=1e-11,
+        screening_tolerance=1e-14,
+        max_iterations=250,
+    )
+    properties = ("energy", "forces")
+    displacement = np.zeros_like(centers)
+    displacement[-1] = (0.02, -0.01, 0.03)
+    with calculator.prepare_batch([atoms], multiplicities=[spins]) as batch:
+        assert batch._native_dft_force_eligible()
+        cold = batch.execute(properties=properties, strict=True).items[0]
+        warm = batch.execute(properties=properties, strict=True).items[0]
+        assert warm.warm_start_used
+        np.testing.assert_allclose(warm.forces, cold.forces, atol=1e-9, rtol=0)
+        moved = batch.execute(
+            [centers + displacement], properties=properties, strict=True
+        ).items[0]
+        assert moved.executed_backend == "cuda"
+
+    size = len(atoms)
+    fixture = {
+        "atoms": size,
+        "spins": spins,
+        "nao": size,
+        "basis": centers.ravel().tolist(),
+        "density": np.tile(np.eye(size), (spins, 1, 1)).ravel().tolist(),
+        **_rvv10_product_grid(centers, PRIMARY),
+    }
+    if secondary is not None:
+        fixture.update(
+            {
+                f"vv10_{key}": value
+                for key, value in _rvv10_product_grid(centers, secondary).items()
+            }
+        )
+    energy = MolecularEnergy(
+        fixture,
+        fitted=fitted,
+        spherical=True,
+        ecp=False,
+        code="R2SCAN",
+        method_case="r2scan-rvv10",
+    )
+    assert moved.energy == pytest.approx(energy(displacement), abs=2e-8)
+    expected_force = np.empty(displacement.size)
+    for component, axis in enumerate(np.eye(displacement.size)):
+        direction = axis.reshape(displacement.shape)
+        estimates = [
+            (
+                energy(displacement - step * direction)
+                - energy(displacement + step * direction)
+            )
+            / (2 * step)
+            for step in (0.002, 0.001)
+        ]
+        expected_force[component] = (4 * estimates[1] - estimates[0]) / 3
+    np.testing.assert_allclose(
+        moved.forces, expected_force.reshape(displacement.shape), atol=3e-7, rtol=0
+    )
+
+
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 @pytest.mark.parametrize("spin,atoms", [(0, ATOMS), (1, ATOMS), (0, WATER), (1, WATER)])
 @pytest.mark.parametrize("secondary", [PRIMARY, GridSpec(6, 4, 8), GridSpec(10, 4, 8)])
